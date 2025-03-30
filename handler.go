@@ -1,26 +1,13 @@
-//   Copyright 2023 Joseph Kratz
-//
-//   Licensed under the Apache License, Version 2.0 (the "License");
-//   you may not use this file except in compliance with the License.
-//   You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-//   Unless required by applicable law or agreed to in writing, software
-//   distributed under the License is distributed on an "AS IS" BASIS,
-//   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//   See the License for the specific language governing permissions and
-//   limitations under the License.
-
 package shiva
 
-// MessageHandler is a type that processes message read from Kafka
-type MessageHandler interface {
-	ProcessMessage(msg Message) error
+type Handler interface {
+	Handle(msg any) error
 }
 
-type MessageHandlerFunc func(msg Message) error
+type HandlerFunc func(msg any) error
 
-func (m MessageHandlerFunc) ProcessMessage(msg Message) error {
-	return m(msg)
+func (f HandlerFunc) Handle(msg any) error {
+	return f(msg)
 }
+
+type Middleware func(Handler) Handler
