@@ -36,8 +36,8 @@ func IsRetryable(err error) bool {
 	return false
 }
 
-// WrapErrorAsRetryable wraps an error in a RetryableError, marking it as retryable.
-func WrapErrorAsRetryable(e error) error {
+// WrapAsRetryable wraps an error in a RetryableError, marking it as retryable.
+func WrapAsRetryable(e error) error {
 	if e == nil {
 		return nil
 	}

@@ -3,6 +3,7 @@ package shiva
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -18,14 +19,16 @@ type retryConfig struct {
 
 func newRetryConfig() *retryConfig {
 	return &retryConfig{
-		maxAttempts:         5,
-		initialDelay:        500 * time.Millisecond,
-		maxDelay:            10 * time.Second,
+		maxAttempts:         defaultMaxRetries,
+		initialDelay:        defaultInitialDelay,
+		maxDelay:            defaultMaxDelay,
 		retryableErrorsOnly: false,
 		onError:             func(err error) {},
 	}
 }
 
+// RetryOption defines a functional option type used to configure retry behavior for the Retry
+// mechanism.
 type RetryOption func(*retryConfig)
 
 // WithMaxAttempts sets the maximum number of attempts for the operation before giving up.
@@ -44,6 +47,14 @@ func WithMaxAttempts(maxAttempts int) RetryOption {
 func WithInitialDelay(initialDelay time.Duration) RetryOption {
 	return func(config *retryConfig) {
 		config.initialDelay = initialDelay
+	}
+}
+
+// WithMaxDelay sets the max delay between retries effectively capping the max time to delay between
+// attempts.
+func WithMaxDelay(maxDelay time.Duration) RetryOption {
+	return func(config *retryConfig) {
+		config.maxDelay = maxDelay
 	}
 }
 
@@ -70,11 +81,11 @@ func WithOnError(onError func(err error)) RetryOption {
 // implementation returns an error up to the max attempts. By default, Retry will make at most
 // five attempts but that can be configured by passing one or many RetryOption. An exponential
 // backoff is used between attempts starting with the initial delay to give the system a chance
-// to recover for transient errors.
+// to recover for transient errors. The default initial delay is 500ms with a max delay of 10s.
 //
 // By default, all errors will be retried. However, using the WithRetryableErrorsOnly option the
 // middleware can be configured to only retry errors marked as retryable which can be achieved by
-// wrapping error that should be retried with the WrapErrorAsRetryable func.
+// wrapping error that should be retried with the WrapAsRetryable func.
 //
 // Retry will return all errors if the max attempts is exhausted without success, but once the
 // operation succeeds the previous errors are discard. It is recommended to either handle logging
@@ -92,26 +103,35 @@ func Retry(next Handler, opts ...RetryOption) Handler {
 		opt(conf)
 	}
 
-	bo := backoff.NewExponentialBackOff()
-	bo.InitialInterval = conf.initialDelay
-	bo.MaxInterval = 2 * time.Minute
-	bo.Multiplier = 2
-
 	return &RetryHandler{
-		next:    next,
-		conf:    conf,
-		backoff: bo,
+		next: next,
+		conf: conf,
+		backoffPool: sync.Pool{
+			New: func() interface{} {
+				bo := backoff.NewExponentialBackOff()
+				bo.InitialInterval = conf.initialDelay
+				bo.MaxInterval = conf.maxDelay
+				bo.Multiplier = 2
+				return bo
+			},
+		},
 	}
 }
 
+// RetryHandler is a middleware that wraps a Handler to provide retry logic with configurable behavior
+// and backoff.
 type RetryHandler struct {
-	next    Handler
-	conf    *retryConfig
-	backoff *backoff.ExponentialBackOff
+	next        Handler
+	conf        *retryConfig
+	backoffPool sync.Pool
 }
 
-func (r *RetryHandler) Handle(msg any) error {
+func (r *RetryHandler) Handle(msg Message) error {
 	var err error
+
+	bo := r.backoffPool.Get().(*backoff.ExponentialBackOff)
+	bo.Reset() // Do not remove this line or the instance of ExponentialBackOff will be in an unpredictable state
+	defer r.backoffPool.Put(bo)
 
 	for i := 0; i < r.conf.maxAttempts; i++ {
 		handlerErr := r.next.Handle(msg)
@@ -120,7 +140,6 @@ func (r *RetryHandler) Handle(msg any) error {
 			return nil
 		}
 
-		r.backoff.Reset()
 		err = errors.Join(err, handlerErr)
 
 		if r.conf.onError != nil {
@@ -135,7 +154,7 @@ func (r *RetryHandler) Handle(msg any) error {
 
 		// We only want to delay if there is at least one more attempt
 		if i < r.conf.maxAttempts-1 {
-			dur := r.backoff.NextBackOff()
+			dur := bo.NextBackOff()
 
 			// If the max delay has been exceeded on ExponentialBackOff then we'll simply delay
 			// for the maximum configured value. Otherwise, delay for the duration returned from

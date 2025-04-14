@@ -9,7 +9,7 @@ import (
 func TestIsRetryable(t *testing.T) {
 
 	originalErr := errors.New("original error")
-	re := WrapErrorAsRetryable(originalErr)
+	re := WrapAsRetryable(originalErr)
 
 	err := fmt.Errorf("making http call: %w", re)
 	err = fmt.Errorf("service layer fun: %w", err)
