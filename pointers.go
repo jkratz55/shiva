@@ -14,9 +14,6 @@ func StringPtr(s string) *string {
 
 // Ptr returns a pointer to the instance passed in.
 func Ptr[T any](v T) *T {
-	if v == nil {
-		return nil
-	}
 	return &v
 }
 

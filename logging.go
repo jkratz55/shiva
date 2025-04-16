@@ -6,13 +6,11 @@ import (
 	"log/slog"
 )
 
-// todo: still trying to determine the most flexible and useful API for this
-
 type Logger interface {
-	Debug(format string, args ...interface{})
-	Info(format string, args ...interface{})
-	Warn(format string, args ...interface{})
-	Error(format string, args ...interface{})
+	Debug(msg string, kvs ...interface{})
+	Info(msg string, kvs ...interface{})
+	Warn(msg string, kvs ...interface{})
+	Error(msg string, kvs ...interface{})
 }
 
 // SlogAdapter is a structured logging adapter wrapping a slog.Logger. It provides
@@ -32,20 +30,20 @@ func NewSlogAdapter(logger *slog.Logger) *SlogAdapter {
 	return &SlogAdapter{logger: logger}
 }
 
-func (s SlogAdapter) Debug(msg string, args ...interface{}) {
-	s.logger.Debug(fmt.Sprintf(msg, args...))
+func (s SlogAdapter) Debug(msg string, kvs ...interface{}) {
+	s.logger.Debug(msg, kvs...)
 }
 
-func (s SlogAdapter) Info(msg string, args ...interface{}) {
-	s.logger.Info(fmt.Sprintf(msg, args...))
+func (s SlogAdapter) Info(msg string, kvs ...interface{}) {
+	s.logger.Info(msg, kvs...)
 }
 
-func (s SlogAdapter) Warn(msg string, args ...interface{}) {
-	s.logger.Warn(fmt.Sprintf(msg, args...))
+func (s SlogAdapter) Warn(msg string, kvs ...interface{}) {
+	s.logger.Warn(msg, kvs...)
 }
 
-func (s SlogAdapter) Error(msg string, args ...interface{}) {
-	s.logger.Error(fmt.Sprintf(msg, args...))
+func (s SlogAdapter) Error(msg string, kvs ...interface{}) {
+	s.logger.Error(msg, kvs...)
 }
 
 type StdLogAdapter struct {
@@ -59,20 +57,36 @@ func NewStdLogAdapter(logger *log.Logger) *StdLogAdapter {
 	return &StdLogAdapter{logger: logger}
 }
 
-func (s StdLogAdapter) Debug(format string, args ...interface{}) {
-	s.logger.Printf("[DEBUG] "+format, args...)
+func (s StdLogAdapter) Debug(msg string, kvs ...interface{}) {
+	s.logger.Printf("[DEBUG] %s %s", msg, formatKVs(kvs...))
 }
 
-func (s StdLogAdapter) Info(format string, args ...interface{}) {
-	s.logger.Printf("[INFO] "+format, args...)
+func (s StdLogAdapter) Info(msg string, kvs ...interface{}) {
+	s.logger.Printf("[INFO] %s %s", msg, formatKVs(kvs...))
 }
 
-func (s StdLogAdapter) Warn(format string, args ...interface{}) {
-	s.logger.Printf("[WARN] "+format, args...)
+func (s StdLogAdapter) Warn(msg string, kvs ...interface{}) {
+	s.logger.Printf("[WARN] %s %s", msg, formatKVs(kvs...))
 }
 
-func (s StdLogAdapter) Error(format string, args ...interface{}) {
-	s.logger.Printf("[ERROR] "+format, args...)
+func (s StdLogAdapter) Error(msg string, kvs ...interface{}) {
+	s.logger.Printf("[ERROR] %s %s", msg, formatKVs(kvs...))
+}
+
+func formatKVs(kvs ...interface{}) string {
+	if len(kvs) == 0 {
+		return ""
+	}
+	formatted := ""
+	for i := 0; i < len(kvs); i += 2 {
+		key := kvs[i]
+		var value interface{} = "(missing)"
+		if i+1 < len(kvs) {
+			value = kvs[i+1]
+		}
+		formatted += fmt.Sprintf("%v=%v ", key, value)
+	}
+	return formatted
 }
 
 // NopLogger is a no-operation logger that implements logging methods without

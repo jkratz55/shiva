@@ -93,7 +93,7 @@ func WithOnError(onError func(err error)) RetryOption {
 // which is a callback invoked whenever an error is returned from the Handler.
 //
 // A panic will occur if next is nil.
-func Retry(next Handler, opts ...RetryOption) Handler {
+func Retry(next Handler, opts ...RetryOption) Middleware {
 	if next == nil {
 		panic("cannot wrap nil Handler, next cannot be nil")
 	}
@@ -103,18 +103,20 @@ func Retry(next Handler, opts ...RetryOption) Handler {
 		opt(conf)
 	}
 
-	return &RetryHandler{
-		next: next,
-		conf: conf,
-		backoffPool: sync.Pool{
-			New: func() interface{} {
-				bo := backoff.NewExponentialBackOff()
-				bo.InitialInterval = conf.initialDelay
-				bo.MaxInterval = conf.maxDelay
-				bo.Multiplier = 2
-				return bo
+	return func(next Handler) Handler {
+		return &RetryHandler{
+			next: next,
+			conf: conf,
+			backoffPool: sync.Pool{
+				New: func() interface{} {
+					bo := backoff.NewExponentialBackOff()
+					bo.InitialInterval = conf.initialDelay
+					bo.MaxInterval = conf.maxDelay
+					bo.Multiplier = 2
+					return bo
+				},
 			},
-		},
+		}
 	}
 }
 

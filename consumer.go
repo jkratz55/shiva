@@ -30,6 +30,7 @@ var _ kafkaConsumer = &kafka.Consumer{}
 type Consumer struct {
 	baseConsumer kafkaConsumer
 	handler      Handler
+	dlHandler    DeadLetterHandler
 	topic        string
 	running      bool
 	mu           sync.Mutex
@@ -39,7 +40,7 @@ type Consumer struct {
 	stopChan     chan struct{}
 }
 
-func NewConsumer(conf Config, topic string, handler Handler) (*Consumer, error) {
+func NewConsumer(conf Config, topic string, handler Handler, dlHandler DeadLetterHandler) (*Consumer, error) {
 	if handler == nil {
 		return nil, errors.New("invalid config: cannot initialize Consumer with nil Handler")
 	}
@@ -49,12 +50,19 @@ func NewConsumer(conf Config, topic string, handler Handler) (*Consumer, error) 
 
 	conf.init()
 
+	if IsNil(dlHandler) {
+		// The default dead letter handler will simply just log errors
+		dlHandler = DeadLetterHandlerFunc(func(msg Message, err error) {
+			// todo: implement logging
+		})
+	}
+
 	configMap := consumerConfigMap(conf)
 
 	stopChan := make(chan struct{})
 	logChan := make(chan kafka.LogEvent, 1000)
 
-	// Start goroutine to read logs from librdkafka and uses slog.Logger to log
+	// Start goroutine to read logs from librdkafka and uses Logger to log
 	// them rather than dumping them to stdout
 	go func(logger Logger) {
 		for {
@@ -64,10 +72,10 @@ func NewConsumer(conf Config, topic string, handler Handler) (*Consumer, error) 
 					return
 				}
 				logger.Debug(logEvent.Message,
-					slog.Group("librdkafka",
-						slog.String("name", logEvent.Name),
-						slog.String("tag", logEvent.Tag),
-						slog.Int("level", logEvent.Level)))
+					"source", "librdkafka",
+					"name", logEvent.Name,
+					"tag", logEvent.Tag,
+					"level", logEvent.Level)
 			case <-stopChan:
 				return
 			}
@@ -86,6 +94,7 @@ func NewConsumer(conf Config, topic string, handler Handler) (*Consumer, error) 
 	consumer := &Consumer{
 		baseConsumer: base,
 		handler:      handler,
+		dlHandler:    dlHandler,
 		topic:        topic,
 		config:       &conf,
 		stopChan:     stopChan,
@@ -179,6 +188,7 @@ func (c *Consumer) Run() error {
 
 func (c *Consumer) handleError(err kafka.Error) error {
 	// todo: implement
+	return nil
 }
 
 func (c *Consumer) handleMessage(msg *kafka.Message) {
@@ -195,9 +205,19 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 		}
 	}
 
-	err := c.handler.Handle(mapMessage(msg))
+	shivaMsg := mapMessage(msg)
+	err := c.handler.Handle(shivaMsg)
 	if err != nil {
-		// todo: log failure
+		if dlErr := c.dlHandler.Handle(shivaMsg, err); dlErr != nil {
+			c.logger.Error("DeadLetterHandler encountered an error handling a message that failed to process",
+				"err", dlErr,
+				"handlerErr", err,
+				"topic", shivaMsg.Topic,
+				"partition", shivaMsg.Partition,
+				"offset", shivaMsg.Offset,
+				"key", shivaMsg.Key,
+			)
+		}
 	}
 
 	// If the AcknowledgmentStrategy is post-processing the message is acknowledged after the Handler
@@ -261,12 +281,12 @@ func (c *Consumer) Close() {
 }
 
 func (c *Consumer) onRebalance(_ *kafka.Consumer, event kafka.Event) error {
-	switch e := event.(type) {
-	case kafka.AssignedPartitions:
-		// todo: log event
-	case kafka.RevokedPartitions:
-		// todo: log event
-	}
+	// switch e := event.(type) {
+	// case kafka.AssignedPartitions:
+	// 	// todo: log event
+	// case kafka.RevokedPartitions:
+	// 	// todo: log event
+	// }
 
 	return nil
 }

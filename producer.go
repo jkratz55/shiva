@@ -2,6 +2,7 @@ package shiva
 
 import (
 	"context"
+	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
@@ -23,4 +24,16 @@ var _ baseProducer = &kafka.Producer{}
 
 type Producer struct {
 	base baseProducer
+}
+
+func NewProducer(base baseProducer) *Producer {
+	return &Producer{}
+}
+
+func (p *Producer) Flush(timeout time.Duration) int {
+	return p.base.Flush(int(timeout.Milliseconds()))
+}
+
+func (p *Producer) Close() {
+	p.base.Close()
 }
