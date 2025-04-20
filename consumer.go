@@ -21,6 +21,8 @@ type kafkaConsumer interface {
 	StoreMessage(msg *kafka.Message) (storedOffsets []kafka.TopicPartition, err error)
 	Commit() ([]kafka.TopicPartition, error)
 	Position(partitions []kafka.TopicPartition) (offsets []kafka.TopicPartition, err error)
+	Pause(partitions []kafka.TopicPartition) (err error)
+	Resume(partitions []kafka.TopicPartition) (err error)
 	IsClosed() bool
 	Close() error
 }
@@ -28,19 +30,24 @@ type kafkaConsumer interface {
 var _ kafkaConsumer = &kafka.Consumer{}
 
 type Consumer struct {
-	baseConsumer kafkaConsumer
-	handler      Handler
-	dlHandler    DeadLetterHandler
-	topic        string
-	running      bool
-	mu           sync.Mutex
-	logger       Logger
-	pollTimeout  int
-	config       *Config
-	stopChan     chan struct{}
+	baseConsumer       kafkaConsumer
+	handler            Handler
+	dlHandler          DeadLetterHandler
+	topic              string
+	running            bool
+	mu                 sync.Mutex
+	logger             Logger
+	pollTimeout        int
+	config             *KafkaConfig
+	stopChan           chan struct{}
+	onErr              func(err error)
+	onAssigned         func(tps TopicPartitions)
+	onRevoked          func(tps TopicPartitions)
+	onStats            func(stats map[string]any)
+	onOffsetsCommitted func(offsets TopicPartitions)
 }
 
-func NewConsumer(conf Config, topic string, handler Handler, dlHandler DeadLetterHandler) (*Consumer, error) {
+func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...ConsumerOption) (*Consumer, error) {
 	if handler == nil {
 		return nil, errors.New("invalid config: cannot initialize Consumer with nil Handler")
 	}
@@ -50,12 +57,11 @@ func NewConsumer(conf Config, topic string, handler Handler, dlHandler DeadLette
 
 	conf.init()
 
-	if IsNil(dlHandler) {
-		// The default dead letter handler will simply just log errors
-		dlHandler = DeadLetterHandlerFunc(func(msg Message, err error) {
-			// todo: implement logging
-		})
+	baseOpts := make([]baseOption, len(opts))
+	for i, opt := range opts {
+		baseOpts[i] = opt
 	}
+	options := newOptions(baseOpts...)
 
 	configMap := consumerConfigMap(conf)
 
@@ -94,14 +100,18 @@ func NewConsumer(conf Config, topic string, handler Handler, dlHandler DeadLette
 	consumer := &Consumer{
 		baseConsumer: base,
 		handler:      handler,
-		dlHandler:    dlHandler,
+		dlHandler:    options.deadLetterHandler,
 		topic:        topic,
+		running:      false,
+		mu:           sync.Mutex{},
+		logger:       options.logger,
+		pollTimeout:  int(conf.PollTimeout.Milliseconds()),
 		config:       &conf,
 		stopChan:     stopChan,
-		logger:       conf.Logger,
-		pollTimeout:  int(conf.PollTimeout.Milliseconds()),
-		mu:           sync.Mutex{},
-		running:      false,
+		onErr:        options.onErr,
+		onAssigned:   options.onAssigned,
+		onRevoked:    options.onRevoked,
+		onStats:      options.onStats,
 	}
 	return consumer, nil
 }
@@ -164,6 +174,10 @@ func (c *Consumer) Run() error {
 
 		case kafka.OffsetsCommitted:
 			c.handleOffsetsCommitted(event)
+
+		case kafka.Stats:
+			// todo: implement me
+
 		default:
 			c.logger.Debug(fmt.Sprintf("Ignoring event %T", event))
 		}
@@ -208,16 +222,11 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 	shivaMsg := mapMessage(msg)
 	err := c.handler.Handle(shivaMsg)
 	if err != nil {
-		if dlErr := c.dlHandler.Handle(shivaMsg, err); dlErr != nil {
-			c.logger.Error("DeadLetterHandler encountered an error handling a message that failed to process",
-				"err", dlErr,
-				"handlerErr", err,
-				"topic", shivaMsg.Topic,
-				"partition", shivaMsg.Partition,
-				"offset", shivaMsg.Offset,
-				"key", shivaMsg.Key,
-			)
-		}
+		// If the Handler returns an error signaling, the message was not successfully
+		// processed. The DeadLetterHandler is invoked to provide a last opportunity
+		// to do something with the message before the Consumer moves on to the next
+		// Message.
+		c.dlHandler.Handle(shivaMsg, err)
 	}
 
 	// If the AcknowledgmentStrategy is post-processing the message is acknowledged after the Handler
@@ -268,6 +277,28 @@ func (c *Consumer) Commit() (TopicPartitions, error) {
 	return mapTopicPartitions(tps), nil
 }
 
+// Pause consumption for the topics and partitions currently assigned to the Consumer.
+//
+// Note that messages already enqueued on the consumer's Event channel will NOT be purged by this
+// call and will still be processed. Additionally, if a rebalance is triggered, the Consumer will
+// resume fetching/polling from Kafka as the pause state is not persisted between rebalances.
+func (c *Consumer) Pause() error {
+	assignment, err := c.baseConsumer.Assignment()
+	if err != nil {
+		return fmt.Errorf("pause: get assignment: %w", err)
+	}
+
+	return c.baseConsumer.Pause(assignment)
+}
+
+func (c *Consumer) Resume() error {
+	assignment, err := c.baseConsumer.Assignment()
+	if err != nil {
+		return fmt.Errorf("pause: get assignment: %w", err)
+	}
+	return c.baseConsumer.Resume(assignment)
+}
+
 func (c *Consumer) IsRunning() bool {
 	return c.running
 }
@@ -281,19 +312,19 @@ func (c *Consumer) Close() {
 }
 
 func (c *Consumer) onRebalance(_ *kafka.Consumer, event kafka.Event) error {
-	// switch e := event.(type) {
-	// case kafka.AssignedPartitions:
-	// 	// todo: log event
-	// case kafka.RevokedPartitions:
-	// 	// todo: log event
-	// }
+	switch e := event.(type) {
+	case kafka.AssignedPartitions:
+		c.onAssigned(mapTopicPartitions(e.Partitions))
+	case kafka.RevokedPartitions:
+		c.onRevoked(mapTopicPartitions(e.Partitions))
+	}
 
 	return nil
 }
 
 // consumerConfigMap maps the configuration to the ConfigMap the Confluent Kafka
 // Go client expects.
-func consumerConfigMap(conf Config) *kafka.ConfigMap {
+func consumerConfigMap(conf KafkaConfig) *kafka.ConfigMap {
 	// Configure base properties/parameters
 	configMap := &kafka.ConfigMap{
 		"bootstrap.servers":                  strings.Join(conf.BootstrapServers, ","),
@@ -330,7 +361,7 @@ func consumerConfigMap(conf Config) *kafka.ConfigMap {
 		}
 	}
 
-	// If using SASL authentication add additional SASL configuration to the
+	// If using SASL authentication, add additional SASL configuration to the
 	// configmap
 	if conf.SecurityProtocol == SaslPlaintext || conf.SecurityProtocol == SaslSsl {
 		_ = configMap.SetKey("sasl.mechanism", conf.SASLMechanism.String())

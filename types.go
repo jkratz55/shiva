@@ -4,6 +4,9 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
+// Stats represents statistics from Confluent Kafka / librdkafka client.
+type Stats = kafka.Stats
+
 // TopicPartition represents a topic and partition along with its offset.
 type TopicPartition struct {
 	Topic     string

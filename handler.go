@@ -6,7 +6,7 @@ package shiva
 // and process the Message. Implementations of Handler should perform any business
 // rules and logic required for the given Message.
 //
-// If the Handler fails processing a Message it can return a non-nil error value
+// If the Handler fails to process a Message, it can return a non-nil error value
 // to signal to the Consumer it failed to process the Message. The Consumer will
 // then invoke the DeadLetterHandler if one is configured. A nil error value will
 // always be interpreted as the Handler successfully processed the Message.

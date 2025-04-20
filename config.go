@@ -7,9 +7,9 @@ import (
 	"github.com/sethvargo/go-envconfig"
 )
 
-// Config represents the configuration settings for a Kafka client, including connection,
+// KafkaConfig represents the configuration settings for a Kafka client, including connection,
 // authentication, and behavior options.
-type Config struct {
+type KafkaConfig struct {
 	// The Kafka brokers addresses used to establish the initial connection to
 	// Kafka. This is a required field.
 	//
@@ -72,7 +72,7 @@ type Config struct {
 	//                    This follows the at-least-once delivery model.
 	//
 	// The default is post-processing.
-	AcknowledgmentStrategy AcknowledgmentStrategy `env:"SHIVA_KAFKA_ATTEMPT_STRATEGY,default=post-processing"`
+	AcknowledgmentStrategy AcknowledgmentStrategy `env:"SHIVA_KAFKA_CONSUMER_ACK_STRATEGY,default=post-processing"`
 
 	// The maximum size for a message. The default is 1048576 (1MB).
 	//
@@ -160,7 +160,7 @@ type Config struct {
 	OnError func(error)
 }
 
-func (c *Config) init() {
+func (c *KafkaConfig) init() {
 	if c.SessionTimeout == 0 {
 		c.SessionTimeout = defaultSessionTimeout
 	}
@@ -200,8 +200,8 @@ func (c *Config) init() {
 }
 
 // ConfigFromEnv loads the configuration for the Kafka client from the environment.
-func ConfigFromEnv() (*Config, error) {
-	var config Config
+func ConfigFromEnv() (*KafkaConfig, error) {
+	var config KafkaConfig
 	err := envconfig.Process(context.Background(), &config)
 	if err != nil {
 		return nil, err

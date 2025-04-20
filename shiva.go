@@ -7,7 +7,7 @@ import (
 // ------------------------------------------------------------------------------------------------
 // Defines defaults and constants
 //
-// If these are changed the documentation on the Config struct needs to updated as well to reflect
+// If these are changed the documentation on the KafkaConfig struct needs to updated as well to reflect
 // the default behavior.
 // ------------------------------------------------------------------------------------------------
 
