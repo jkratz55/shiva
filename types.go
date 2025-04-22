@@ -7,6 +7,13 @@ import (
 // Stats represents statistics from Confluent Kafka / librdkafka client.
 type Stats = kafka.Stats
 
+// Watermark is a data structure representing the lowest and highest offsets for
+// a topic/partition.
+type Watermark struct {
+	Low  int64
+	High int64
+}
+
 // TopicPartition represents a topic and partition along with its offset.
 type TopicPartition struct {
 	Topic     string

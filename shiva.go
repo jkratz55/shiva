@@ -1,6 +1,7 @@
 package shiva
 
 import (
+	"math"
 	"time"
 )
 
@@ -45,4 +46,10 @@ const (
 	defaultMaxRetries   = 5
 	defaultInitialDelay = 500 * time.Millisecond
 	defaultMaxDelay     = 10 * time.Second
+
+	// UnlimitedRetries is the maximum integer value for the platform.
+	//
+	// Technically, UnlimitedRetries is not unlimited but from a practical perspective is operates
+	// as if it were infinite.
+	UnlimitedRetries = math.MaxInt
 )

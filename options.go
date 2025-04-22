@@ -16,7 +16,8 @@ type options struct {
 	onRevoked          func(tps TopicPartitions)
 	onStats            func(data map[string]any)
 	statsEnabled       bool
-	onOffsetsCommitted func(offsets TopicPartitions)
+	statsInterval      int
+	onOffsetsCommitted func(offsets TopicPartitions, err error)
 }
 
 func newOptions(opts ...baseOption) *options {
@@ -128,14 +129,15 @@ func WithStats(interval time.Duration, fn func(stats map[string]any)) ConsumerOp
 	return consumerOption(func(opt *options) {
 		opt.onStats = fn
 		opt.statsEnabled = true
+		opt.statsInterval = int(interval.Milliseconds())
 	})
 }
 
 // WithOnOffsetsCommitted sets a callback that will be invoked by the Consumer when
 // offsets are committed back to the Kafka brokers.
-func WithOnOffsetsCommitted(fn func(offsets TopicPartitions)) ConsumerOption {
+func WithOnOffsetsCommitted(fn func(offsets TopicPartitions, err error)) ConsumerOption {
 	if fn == nil {
-		fn = func(offsets TopicPartitions) {}
+		fn = func(offsets TopicPartitions, err error) {}
 	}
 	return consumerOption(func(opt *options) {
 		opt.onOffsetsCommitted = fn

@@ -139,25 +139,6 @@ type KafkaConfig struct {
 	//
 	// Applies To: Producer
 	RequiredAcks RequiredAck `env:"SHIVA_KAFKA_PRODUCER_REQUIRED_ACKS, default=all"`
-
-	// Configures the logger used by the Consumer and Producer types.
-	//
-	// When nil a default logger will be used that logs to os.Stderr at ERROR
-	// level using JSON format.
-	//
-	// Note: Logs from librdkafka are logged at DEBUG level. If the provided
-	// logger is configured at DEBUG level, you will see logs from librdkafka
-	// as well as Kefka logs.
-	//
-	// Applies To: Consumer, Producer
-	Logger Logger
-
-	// A callback that is called when Confluent Kafka Client/librdkafka returns
-	// a Kafka error. This can be useful for logging errors or capturing metrics.
-	// The default value is nil and won't be called.
-	//
-	// Applies To: Consumer, Producer
-	OnError func(error)
 }
 
 func (c *KafkaConfig) init() {
@@ -194,9 +175,6 @@ func (c *KafkaConfig) init() {
 	if c.SASLMechanism == "" {
 		c.SASLMechanism = defaultSASLMechanism
 	}
-	if c.OnError == nil {
-		c.OnError = func(err error) {}
-	}
 }
 
 // ConfigFromEnv loads the configuration for the Kafka client from the environment.
@@ -206,9 +184,6 @@ func ConfigFromEnv() (*KafkaConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	config.Logger = NewNopLogger()
-	config.OnError = func(err error) {}
 
 	return &config, nil
 }
