@@ -2,6 +2,9 @@ package shiva
 
 import (
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
 type options struct {
@@ -9,6 +12,7 @@ type options struct {
 	// common options
 	logger Logger
 	onErr  func(err error)
+	meter  metric.Meter
 
 	// consumer options
 	deadLetterHandler  DeadLetterHandler
@@ -22,9 +26,16 @@ type options struct {
 
 func newOptions(opts ...baseOption) *options {
 	o := &options{
-		logger:            NewNopLogger(),
-		onErr:             func(err error) {},
-		deadLetterHandler: DeadLetterHandlerFunc(func(msg Message, err error) {}),
+		logger:             NewNopLogger(),
+		onErr:              func(err error) {},
+		meter:              otel.Meter("github.com/jkratz55/shiva"),
+		deadLetterHandler:  DeadLetterHandlerFunc(func(msg Message, err error) {}),
+		onAssigned:         func(tps TopicPartitions) {},
+		onRevoked:          func(tps TopicPartitions) {},
+		onStats:            func(data map[string]any) {},
+		statsEnabled:       false,
+		statsInterval:      0,
+		onOffsetsCommitted: func(offsets TopicPartitions, err error) {},
 	}
 
 	for _, opt := range opts {
@@ -83,6 +94,13 @@ func WithOnErr(fn func(err error)) Option {
 	}
 	return option(func(opt *options) {
 		opt.onErr = fn
+	})
+}
+
+// WithMeter configures a specific OpenTelemetry Meter to be used for metrics.
+func WithMeter(m metric.Meter) Option {
+	return option(func(opt *options) {
+		opt.meter = m
 	})
 }
 

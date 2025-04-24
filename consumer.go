@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"go.opentelemetry.io/otel/attribute"
+
+	"go.opentelemetry.io/otel/metric"
 )
 
 type kafkaConsumer interface {
@@ -55,6 +58,15 @@ type Consumer struct {
 	onRevoked          func(tps TopicPartitions)
 	onStats            func(stats map[string]any)
 	onOffsetsCommitted func(offsets TopicPartitions, err error)
+	name               string
+
+	// metrics
+	messagesProcessed metric.Int64Counter
+	rebalances        metric.Int64Counter
+	handlerErrors     metric.Int64Counter
+	kafkaErrors       metric.Int64Counter
+	handlerLatency    metric.Float64Histogram
+	lag               metric.Int64Gauge
 }
 
 // NewConsumer creates and initializes a Consumer instance.
@@ -135,7 +147,10 @@ func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...Consum
 		onRevoked:          options.onRevoked,
 		onStats:            options.onStats,
 		onOffsetsCommitted: options.onOffsetsCommitted,
+		name:               fmt.Sprintf("%s|%T", topic, handler),
 	}
+
+	consumer.initMetrics(options)
 
 	err = consumer.baseConsumer.Subscribe(consumer.topic, consumer.onRebalance)
 	if err != nil {
@@ -143,6 +158,63 @@ func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...Consum
 	}
 
 	return consumer, nil
+}
+
+func (c *Consumer) initMetrics(opts *options) {
+
+	// Initializing metrics can fail, but we simply log them out rather than crashing the
+	// Consumer
+	var err error
+
+	c.messagesProcessed, err = opts.meter.Int64Counter(
+		"kafka.consumer.messages.processed",
+		metric.WithDescription("Number of messages processed"))
+	if err != nil {
+		c.logger.Warn("failed to create metric kafka.consumer.messages.processed",
+			"err", err)
+	}
+
+	c.kafkaErrors, err = opts.meter.Int64Counter(
+		"kafka.consumer.errors",
+		metric.WithDescription("Number of errors encountered by the Consumer"))
+	if err != nil {
+		c.logger.Warn("failed to create metric kafka.consumer.errors",
+			"err", err)
+	}
+
+	c.handlerErrors, err = opts.meter.Int64Counter(
+		"kafka.consumer.messages.failed",
+		metric.WithDescription("Number of messages the Consumer/Handler failed to process"))
+	if err != nil {
+		c.logger.Warn("failed to create metric kafka.consumer.messages.failed",
+			"err", err)
+	}
+
+	c.handlerLatency, err = opts.meter.Float64Histogram(
+		"kafka.consumer.handler.latency",
+		metric.WithDescription("Latency for the Handler to process a message from Kafka"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.000))
+	if err != nil {
+		c.logger.Warn("failed to create metric kafka.consumer.handler.latency",
+			"err", err)
+	}
+
+	c.rebalances, err = opts.meter.Int64Counter(
+		"kafka.consumer.rebalances",
+		metric.WithDescription("Number of consumer group rebalances"))
+	if err != nil {
+		c.logger.Warn("failed to create metric kafka.consumer.rebalances",
+			"err", err)
+	}
+
+	c.lag, err = opts.meter.Int64Gauge(
+		"kafka.consumer.group.lag",
+		metric.WithDescription("Current lag for the topics/partitions assigned to the Consumer"))
+	if err != nil {
+		c.logger.Warn("failed to create metric kafka.consumer.group.lag",
+			"err", err)
+	}
 }
 
 // Run polls events from Kafka until either Close is called or the Consumer encounters
@@ -168,6 +240,7 @@ func (c *Consumer) Run() error {
 	}
 
 	c.running = true
+	go c.monitorLag()
 
 	// Event loop that continuously polls the brokers for new events and handles
 	// them accordingly. The loop will continue to run until the Consumer is closed
@@ -228,6 +301,10 @@ func (c *Consumer) Run() error {
 // considered fatal, otherwise returns nil.
 func (c *Consumer) handleError(err kafka.Error) error {
 
+	c.kafkaErrors.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("topic", c.topic),
+		attribute.String("handler", c.name)))
+
 	// Invoke onErr callback
 	c.onErr(fmt.Errorf("kafka: %w", err))
 
@@ -242,6 +319,12 @@ func (c *Consumer) handleError(err kafka.Error) error {
 // the message by storing the offset locally based on the AcknowledgmentStrategy,
 // and hands the Message off to the Handler.
 func (c *Consumer) handleMessage(msg *kafka.Message) {
+	defer func() {
+		c.messagesProcessed.Add(context.Background(), 1, metric.WithAttributes(
+			attribute.String("handler", c.name),
+			attribute.String("topic", c.topic)))
+	}()
+
 	// Note: If the AcknowledgmentStrategy is set to none the message is never acknowledged on
 	// purpose.
 
@@ -255,9 +338,21 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 		}
 	}
 
+	startTs := time.Now()
+
 	shivaMsg := mapMessage(msg)
 	err := c.handler.Handle(shivaMsg)
+
+	handlerDur := time.Since(startTs)
+	c.handlerLatency.Record(context.Background(), handlerDur.Seconds(), metric.WithAttributes(
+		attribute.String("topic", c.topic),
+		attribute.String("handler", c.name)))
+
 	if err != nil {
+		c.handlerErrors.Add(context.Background(), 1, metric.WithAttributes(
+			attribute.String("topic", c.topic),
+			attribute.String("handler", c.name)))
+
 		// If the Handler returns an error signaling, the message was not successfully
 		// processed. The DeadLetterHandler is invoked to provide a last opportunity
 		// to do something with the message before the Consumer moves on to the next
@@ -504,19 +599,28 @@ func (c *Consumer) QueryWatermarkOffsets(ctx context.Context) (map[string]Waterm
 	}
 }
 
+// IsRunning indicates if the Consumer is running.
 func (c *Consumer) IsRunning() bool {
 	return c.running
 }
 
+// IsClosed indicates if the Consumer is closed.
 func (c *Consumer) IsClosed() bool {
 	return c.baseConsumer.IsClosed()
 }
 
+// Close stops the Consumer and releases the underlying resources.
+//
+// After Close the Consumer is not usable.
 func (c *Consumer) Close() {
 	c.running = false
 }
 
 func (c *Consumer) onRebalance(_ *kafka.Consumer, event kafka.Event) error {
+	c.rebalances.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("topic", c.topic),
+		attribute.String("handler", c.name)))
+
 	switch e := event.(type) {
 	case kafka.AssignedPartitions:
 		c.onAssigned(mapTopicPartitions(e.Partitions))
@@ -525,6 +629,37 @@ func (c *Consumer) onRebalance(_ *kafka.Consumer, event kafka.Event) error {
 	}
 
 	return nil
+}
+
+// monitorLag updates metrics with the current lag every 10 seconds.
+func (c *Consumer) monitorLag() {
+	ticker := time.NewTicker(time.Second * 10)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// If the Consumer is no longer running return
+			if !c.running {
+				return
+			}
+
+			lags, err := c.Lag()
+			if err != nil {
+				c.logger.Warn("Failed for update lag metrics",
+					"err", err)
+			}
+
+			for tp, lag := range lags {
+				parts := strings.Split(tp, "|")
+				c.lag.Record(context.Background(), lag, metric.WithAttributes(
+					attribute.String("topic", parts[0]),
+					attribute.String("partition", parts[1]),
+					attribute.String("group", c.config.GroupID),
+					attribute.String("handler", c.name)))
+			}
+		}
+	}
 }
 
 // consumerConfigMap maps the configuration to the ConfigMap the Confluent Kafka
