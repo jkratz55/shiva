@@ -150,7 +150,7 @@ func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...Consum
 		name:               fmt.Sprintf("%s|%T", topic, handler),
 	}
 
-	consumer.initMetrics(options)
+	consumer.initMetrics(options.meterProvider)
 
 	err = consumer.baseConsumer.Subscribe(consumer.topic, consumer.onRebalance)
 	if err != nil {
@@ -160,13 +160,15 @@ func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...Consum
 	return consumer, nil
 }
 
-func (c *Consumer) initMetrics(opts *options) {
+func (c *Consumer) initMetrics(mp metric.MeterProvider) {
 
 	// Initializing metrics can fail, but we simply log them out rather than crashing the
 	// Consumer
 	var err error
 
-	c.messagesProcessed, err = opts.meter.Int64Counter(
+	meter := mp.Meter("github.com/jkratz55/shiva", metric.WithInstrumentationVersion("v1"))
+
+	c.messagesProcessed, err = meter.Int64Counter(
 		"kafka.consumer.messages.processed",
 		metric.WithDescription("Number of messages processed"))
 	if err != nil {
@@ -174,7 +176,7 @@ func (c *Consumer) initMetrics(opts *options) {
 			"err", err)
 	}
 
-	c.kafkaErrors, err = opts.meter.Int64Counter(
+	c.kafkaErrors, err = meter.Int64Counter(
 		"kafka.consumer.errors",
 		metric.WithDescription("Number of errors encountered by the Consumer"))
 	if err != nil {
@@ -182,7 +184,7 @@ func (c *Consumer) initMetrics(opts *options) {
 			"err", err)
 	}
 
-	c.handlerErrors, err = opts.meter.Int64Counter(
+	c.handlerErrors, err = meter.Int64Counter(
 		"kafka.consumer.messages.failed",
 		metric.WithDescription("Number of messages the Consumer/Handler failed to process"))
 	if err != nil {
@@ -190,7 +192,7 @@ func (c *Consumer) initMetrics(opts *options) {
 			"err", err)
 	}
 
-	c.handlerLatency, err = opts.meter.Float64Histogram(
+	c.handlerLatency, err = meter.Float64Histogram(
 		"kafka.consumer.handler.latency",
 		metric.WithDescription("Latency for the Handler to process a message from Kafka"),
 		metric.WithUnit("s"),
@@ -200,7 +202,7 @@ func (c *Consumer) initMetrics(opts *options) {
 			"err", err)
 	}
 
-	c.rebalances, err = opts.meter.Int64Counter(
+	c.rebalances, err = meter.Int64Counter(
 		"kafka.consumer.rebalances",
 		metric.WithDescription("Number of consumer group rebalances"))
 	if err != nil {
@@ -208,7 +210,7 @@ func (c *Consumer) initMetrics(opts *options) {
 			"err", err)
 	}
 
-	c.lag, err = opts.meter.Int64Gauge(
+	c.lag, err = meter.Int64Gauge(
 		"kafka.consumer.group.lag",
 		metric.WithDescription("Current lag for the topics/partitions assigned to the Consumer"))
 	if err != nil {

@@ -10,9 +10,9 @@ import (
 type options struct {
 
 	// common options
-	logger Logger
-	onErr  func(err error)
-	meter  metric.Meter
+	logger        Logger
+	onErr         func(err error)
+	meterProvider metric.MeterProvider
 
 	// consumer options
 	deadLetterHandler  DeadLetterHandler
@@ -28,7 +28,7 @@ func newOptions(opts ...baseOption) *options {
 	o := &options{
 		logger:             NewNopLogger(),
 		onErr:              func(err error) {},
-		meter:              otel.Meter("github.com/jkratz55/shiva"),
+		meterProvider:      otel.GetMeterProvider(),
 		deadLetterHandler:  DeadLetterHandlerFunc(func(msg Message, err error) {}),
 		onAssigned:         func(tps TopicPartitions) {},
 		onRevoked:          func(tps TopicPartitions) {},
@@ -97,10 +97,10 @@ func WithOnErr(fn func(err error)) Option {
 	})
 }
 
-// WithMeter configures a specific OpenTelemetry Meter to be used for metrics.
-func WithMeter(m metric.Meter) Option {
+// WithMeterProvider configures a specific OpenTelemetry Meter to be used for metrics.
+func WithMeterProvider(mp metric.MeterProvider) Option {
 	return option(func(opt *options) {
-		opt.meter = m
+		opt.meterProvider = mp
 	})
 }
 
