@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/jkratz55/shiva"
+	"github.com/jkratz55/shiva/shivaotel"
 )
 
 // ExampleHandler is a Handler implementation that just prints out the message
@@ -135,6 +136,13 @@ func main() {
 		fmt.Println(err)
 	}
 
+	// Initial the ConsumerTelemetryProvider so we get metrics from the Consumer
+	telemetryProvider, err := shivaotel.NewConsumerTelemetryProvider(
+		shivaotel.WithMeterProvider(meterProvider))
+	if err != nil {
+		panic(err)
+	}
+
 	// Wrap the ExampleHandler with Retry middleware and only retry if errors are
 	// marked as retryable
 	handler = shiva.Retry(handler,
@@ -149,7 +157,8 @@ func main() {
 		shiva.WithOnAssigned(hooks.OnAssigned),
 		shiva.WithOnRevoked(hooks.OnRevoked),
 		shiva.WithDeadLetterHandler(dlHandler),
-		shiva.WithMeterProvider(meterProvider))
+		shiva.WithConsumerTelemetryProvider(telemetryProvider),
+		shiva.WithName("test"))
 	if err != nil {
 		panic(err)
 	}

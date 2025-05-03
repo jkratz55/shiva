@@ -10,9 +10,6 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"go.opentelemetry.io/otel/attribute"
-
-	"go.opentelemetry.io/otel/metric"
 )
 
 type kafkaConsumer interface {
@@ -59,14 +56,10 @@ type Consumer struct {
 	onStats            func(stats map[string]any)
 	onOffsetsCommitted func(offsets TopicPartitions, err error)
 	name               string
+	telemetryProvider  ConsumerTelemetryProvider
 
-	// metrics
-	messagesProcessed metric.Int64Counter
-	rebalances        metric.Int64Counter
-	handlerErrors     metric.Int64Counter
-	kafkaErrors       metric.Int64Counter
-	handlerLatency    metric.Float64Histogram
-	lag               metric.Int64Gauge
+	rebalanceCh      chan struct{}
+	lagMonitorStopCh chan struct{}
 }
 
 // NewConsumer creates and initializes a Consumer instance.
@@ -131,6 +124,12 @@ func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...Consum
 		return nil, fmt.Errorf("kafka: failed to initialize Confluent Kafka Consumer: %w", err)
 	}
 
+	// If name isn't set use the topic and type of the handler to generate a default name.
+	name := options.name
+	if strings.TrimSpace(name) == "" {
+		name = fmt.Sprintf("%s|%T", topic, handler)
+	}
+
 	consumer := &Consumer{
 		baseConsumer:       base,
 		handler:            handler,
@@ -147,10 +146,11 @@ func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...Consum
 		onRevoked:          options.onRevoked,
 		onStats:            options.onStats,
 		onOffsetsCommitted: options.onOffsetsCommitted,
-		name:               fmt.Sprintf("%s|%T", topic, handler),
+		name:               name,
+		telemetryProvider:  options.consumerTelemetryProvider,
+		rebalanceCh:        make(chan struct{}, 1),
+		lagMonitorStopCh:   make(chan struct{}, 1),
 	}
-
-	consumer.initMetrics(options.meterProvider)
 
 	err = consumer.baseConsumer.Subscribe(consumer.topic, consumer.onRebalance)
 	if err != nil {
@@ -158,65 +158,6 @@ func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...Consum
 	}
 
 	return consumer, nil
-}
-
-func (c *Consumer) initMetrics(mp metric.MeterProvider) {
-
-	// Initializing metrics can fail, but we simply log them out rather than crashing the
-	// Consumer
-	var err error
-
-	meter := mp.Meter("github.com/jkratz55/shiva", metric.WithInstrumentationVersion("v1"))
-
-	c.messagesProcessed, err = meter.Int64Counter(
-		"kafka.consumer.messages.processed",
-		metric.WithDescription("Number of messages processed"))
-	if err != nil {
-		c.logger.Warn("failed to create metric kafka.consumer.messages.processed",
-			"err", err)
-	}
-
-	c.kafkaErrors, err = meter.Int64Counter(
-		"kafka.consumer.errors",
-		metric.WithDescription("Number of errors encountered by the Consumer"))
-	if err != nil {
-		c.logger.Warn("failed to create metric kafka.consumer.errors",
-			"err", err)
-	}
-
-	c.handlerErrors, err = meter.Int64Counter(
-		"kafka.consumer.messages.failed",
-		metric.WithDescription("Number of messages the Consumer/Handler failed to process"))
-	if err != nil {
-		c.logger.Warn("failed to create metric kafka.consumer.messages.failed",
-			"err", err)
-	}
-
-	c.handlerLatency, err = meter.Float64Histogram(
-		"kafka.consumer.handler.latency",
-		metric.WithDescription("Latency for the Handler to process a message from Kafka"),
-		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.000))
-	if err != nil {
-		c.logger.Warn("failed to create metric kafka.consumer.handler.latency",
-			"err", err)
-	}
-
-	c.rebalances, err = meter.Int64Counter(
-		"kafka.consumer.rebalances",
-		metric.WithDescription("Number of consumer group rebalances"))
-	if err != nil {
-		c.logger.Warn("failed to create metric kafka.consumer.rebalances",
-			"err", err)
-	}
-
-	c.lag, err = meter.Int64Gauge(
-		"kafka.consumer.group.lag",
-		metric.WithDescription("Current lag for the topics/partitions assigned to the Consumer"))
-	if err != nil {
-		c.logger.Warn("failed to create metric kafka.consumer.group.lag",
-			"err", err)
-	}
 }
 
 // Run polls events from Kafka until either Close is called or the Consumer encounters
@@ -265,6 +206,7 @@ func (c *Consumer) Run() error {
 				_, _ = c.baseConsumer.Commit()
 				_ = c.baseConsumer.Close()
 				c.stopChan <- struct{}{}
+				c.lagMonitorStopCh <- struct{}{}
 				return err
 			}
 
@@ -296,6 +238,7 @@ func (c *Consumer) Run() error {
 
 	// Signal to the goroutine processing logs to stop
 	c.stopChan <- struct{}{}
+	c.lagMonitorStopCh <- struct{}{}
 	return closeErr
 }
 
@@ -303,9 +246,7 @@ func (c *Consumer) Run() error {
 // considered fatal, otherwise returns nil.
 func (c *Consumer) handleError(err kafka.Error) error {
 
-	c.kafkaErrors.Add(context.Background(), 1, metric.WithAttributes(
-		attribute.String("topic", c.topic),
-		attribute.String("handler", c.name)))
+	c.telemetryProvider.RecordKafkaError(c.name, c.topic, int(err.Code()))
 
 	// Invoke onErr callback
 	c.onErr(fmt.Errorf("kafka: %w", err))
@@ -322,9 +263,7 @@ func (c *Consumer) handleError(err kafka.Error) error {
 // and hands the Message off to the Handler.
 func (c *Consumer) handleMessage(msg *kafka.Message) {
 	defer func() {
-		c.messagesProcessed.Add(context.Background(), 1, metric.WithAttributes(
-			attribute.String("handler", c.name),
-			attribute.String("topic", c.topic)))
+		c.telemetryProvider.RecordMessageProcessed(c.name, c.topic)
 	}()
 
 	// Note: If the AcknowledgmentStrategy is set to none the message is never acknowledged on
@@ -346,14 +285,10 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 	err := c.handler.Handle(shivaMsg)
 
 	handlerDur := time.Since(startTs)
-	c.handlerLatency.Record(context.Background(), handlerDur.Seconds(), metric.WithAttributes(
-		attribute.String("topic", c.topic),
-		attribute.String("handler", c.name)))
+	c.telemetryProvider.RecordHandlerExecutionDuration(c.name, c.topic, handlerDur)
 
 	if err != nil {
-		c.handlerErrors.Add(context.Background(), 1, metric.WithAttributes(
-			attribute.String("topic", c.topic),
-			attribute.String("handler", c.name)))
+		c.telemetryProvider.RecordHandlerError(c.name, c.topic)
 
 		// If the Handler returns an error signaling, the message was not successfully
 		// processed. The DeadLetterHandler is invoked to provide a last opportunity
@@ -619,9 +554,7 @@ func (c *Consumer) Close() {
 }
 
 func (c *Consumer) onRebalance(_ *kafka.Consumer, event kafka.Event) error {
-	c.rebalances.Add(context.Background(), 1, metric.WithAttributes(
-		attribute.String("topic", c.topic),
-		attribute.String("handler", c.name)))
+	c.telemetryProvider.RecordRebalance(c.name, c.config.GroupID)
 
 	switch e := event.(type) {
 	case kafka.AssignedPartitions:
@@ -630,6 +563,9 @@ func (c *Consumer) onRebalance(_ *kafka.Consumer, event kafka.Event) error {
 		c.onRevoked(mapTopicPartitions(e.Partitions))
 	}
 
+	// Notify goroutine monitoring lag to reset its gauges to 0
+	c.rebalanceCh <- struct{}{}
+
 	return nil
 }
 
@@ -637,6 +573,8 @@ func (c *Consumer) onRebalance(_ *kafka.Consumer, event kafka.Event) error {
 func (c *Consumer) monitorLag() {
 	ticker := time.NewTicker(time.Second * 10)
 	defer ticker.Stop()
+
+	knownTopicPartitions := make(map[string]struct{})
 
 	for {
 		select {
@@ -653,13 +591,28 @@ func (c *Consumer) monitorLag() {
 			}
 
 			for tp, lag := range lags {
+				knownTopicPartitions[tp] = struct{}{}
 				parts := strings.Split(tp, "|")
-				c.lag.Record(context.Background(), lag, metric.WithAttributes(
-					attribute.String("topic", parts[0]),
-					attribute.String("partition", parts[1]),
-					attribute.String("group", c.config.GroupID),
-					attribute.String("handler", c.name)))
+				c.telemetryProvider.RecordLag(c.name, c.config.GroupID, parts[0], parts[1], lag)
 			}
+
+		case <-c.rebalanceCh:
+			// If a rebalance occurs, we may have end up with different partitions or maybe even
+			// no partitions. This means the metrics (gauges) we've been updating with the lag
+			// could remain fixed and create misleading metrics. When we detect a rebalance, we
+			// reset the lag to the partitions we've been updating to 0
+			for tp, _ := range knownTopicPartitions {
+				parts := strings.Split(tp, "|")
+				topic := parts[0]
+				partition := parts[1]
+
+				c.telemetryProvider.RecordLag(c.name, c.config.GroupID, topic, partition, 0)
+			}
+			knownTopicPartitions = make(map[string]struct{})
+
+		case <-c.lagMonitorStopCh:
+			// Consumer is done, stop monitoring lag
+			return
 		}
 	}
 }

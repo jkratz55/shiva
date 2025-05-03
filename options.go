@@ -2,40 +2,39 @@ package shiva
 
 import (
 	"time"
-
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/metric"
 )
 
 type options struct {
 
 	// common options
-	logger        Logger
-	onErr         func(err error)
-	meterProvider metric.MeterProvider
+	logger Logger
+	onErr  func(err error)
+	name   string
 
 	// consumer options
-	deadLetterHandler  DeadLetterHandler
-	onAssigned         func(tps TopicPartitions)
-	onRevoked          func(tps TopicPartitions)
-	onStats            func(data map[string]any)
-	statsEnabled       bool
-	statsInterval      int
-	onOffsetsCommitted func(offsets TopicPartitions, err error)
+	deadLetterHandler         DeadLetterHandler
+	onAssigned                func(tps TopicPartitions)
+	onRevoked                 func(tps TopicPartitions)
+	onStats                   func(data map[string]any)
+	statsEnabled              bool
+	statsInterval             int
+	onOffsetsCommitted        func(offsets TopicPartitions, err error)
+	consumerTelemetryProvider ConsumerTelemetryProvider
 }
 
 func newOptions(opts ...baseOption) *options {
 	o := &options{
-		logger:             NewNopLogger(),
-		onErr:              func(err error) {},
-		meterProvider:      otel.GetMeterProvider(),
-		deadLetterHandler:  DeadLetterHandlerFunc(func(msg Message, err error) {}),
-		onAssigned:         func(tps TopicPartitions) {},
-		onRevoked:          func(tps TopicPartitions) {},
-		onStats:            func(data map[string]any) {},
-		statsEnabled:       false,
-		statsInterval:      0,
-		onOffsetsCommitted: func(offsets TopicPartitions, err error) {},
+		logger:                    NewNopLogger(),
+		onErr:                     func(err error) {},
+		deadLetterHandler:         DeadLetterHandlerFunc(func(msg Message, err error) {}),
+		onAssigned:                func(tps TopicPartitions) {},
+		onRevoked:                 func(tps TopicPartitions) {},
+		onStats:                   func(data map[string]any) {},
+		statsEnabled:              false,
+		statsInterval:             0,
+		onOffsetsCommitted:        func(offsets TopicPartitions, err error) {},
+		consumerTelemetryProvider: &NopConsumerTelemetryProvider{},
+		name:                      "",
 	}
 
 	for _, opt := range opts {
@@ -97,10 +96,10 @@ func WithOnErr(fn func(err error)) Option {
 	})
 }
 
-// WithMeterProvider configures a specific OpenTelemetry Meter to be used for metrics.
-func WithMeterProvider(mp metric.MeterProvider) Option {
+// WithName sets a name or identifier for a producer or consumer.
+func WithName(name string) Option {
 	return option(func(opt *options) {
-		opt.meterProvider = mp
+		opt.name = name
 	})
 }
 
@@ -159,5 +158,16 @@ func WithOnOffsetsCommitted(fn func(offsets TopicPartitions, err error)) Consume
 	}
 	return consumerOption(func(opt *options) {
 		opt.onOffsetsCommitted = fn
+	})
+}
+
+// WithConsumerTelemetryProvider sets an implementation of ConsumerTelemetryProvider
+// the Consumer will use to record metrics/telemetry.
+func WithConsumerTelemetryProvider(provider ConsumerTelemetryProvider) ConsumerOption {
+	if provider == nil {
+		provider = &NopConsumerTelemetryProvider{}
+	}
+	return consumerOption(func(opt *options) {
+		opt.consumerTelemetryProvider = provider
 	})
 }
