@@ -9,6 +9,10 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// ConsumerTelemetryProvider instruments and captures metrics for a Consumer using
+// OpenTelemetry metrics.
+//
+// The zero-value is not usable. Initialize new instances using NewConsumerTelemetryProvider.
 type ConsumerTelemetryProvider struct {
 	// metrics
 	messagesProcessed metric.Int64Counter
@@ -19,6 +23,7 @@ type ConsumerTelemetryProvider struct {
 	lag               metric.Int64Gauge
 }
 
+// NewConsumerTelemetryProvider initializes a new ConsumerTelemetryProvider.
 func NewConsumerTelemetryProvider(opts ...ConsumerOption) (*ConsumerTelemetryProvider, error) {
 
 	baseOpts := make([]baseOption, len(opts))

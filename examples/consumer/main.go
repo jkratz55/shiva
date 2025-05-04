@@ -158,7 +158,7 @@ func main() {
 		shiva.WithOnRevoked(hooks.OnRevoked),
 		shiva.WithDeadLetterHandler(dlHandler),
 		shiva.WithConsumerTelemetryProvider(telemetryProvider),
-		shiva.WithName("test"))
+		shiva.WithName("test-consumer"))
 	if err != nil {
 		panic(err)
 	}

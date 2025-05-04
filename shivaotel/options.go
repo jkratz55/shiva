@@ -56,6 +56,8 @@ func (c consumerOption) apply(opts *config) {
 
 func (c consumerOption) consumer() {}
 
+// WithMeterProvider allows a custom-configured MeterProvider to be used for
+// instrumenting with OpenTelemetry.
 func WithMeterProvider(mp metric.MeterProvider) Option {
 	if mp == nil {
 		mp = otel.GetMeterProvider()
@@ -65,6 +67,8 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 	})
 }
 
+// WithHandlerHistogramBuckets sets the buckets for the Consumer Handler execution
+// duration.
 func WithHandlerHistogramBuckets(buckets ...float64) ConsumerOption {
 	return option(func(opt *config) {
 		opt.handlerHistogramBuckets = buckets

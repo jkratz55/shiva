@@ -1,5 +1,7 @@
 package shivaotel
 
+// todo: Implement tracing!
+
 const (
 	Scope   = "github.com/jkratz55/shiva"
 	Version = "0.1.0"

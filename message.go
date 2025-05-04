@@ -1,6 +1,7 @@
 package shiva
 
 import (
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,8 +82,29 @@ func (m *MessageBuilder) Key(k string) *MessageBuilder {
 }
 
 // Value sets the value for the message.
-func (m *MessageBuilder) Value(v []byte) *MessageBuilder {
-	m.value = v
+//
+// The behavior of Value varies based on the type of v:
+//
+//		  []byte - uses value as is
+//		  string - cast the value as []byte
+//	   encoding.BinaryMarshaler - invokes MarshalBinary and uses the resulting []byte
+//
+// If v is not any of the above types Value will attempt to marshal v as JSON.
+func (m *MessageBuilder) Value(v interface{}) *MessageBuilder {
+	switch val := v.(type) {
+	case []byte:
+		m.value = val
+	case string:
+		m.value = []byte(val)
+	case encoding.BinaryMarshaler:
+		data, err := val.MarshalBinary()
+		m.err = err
+		m.value = data
+	default:
+		data, err := json.Marshal(val)
+		m.err = err
+		m.value = data
+	}
 	return m
 }
 
