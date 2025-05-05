@@ -57,6 +57,33 @@ func mapMessage(msg *kafka.Message) Message {
 	return m
 }
 
+// toKafkaMessage maps shiva representation of a kafka message to the confluent kafka go module's
+// message type.
+func toKafkaMessage(m Message) *kafka.Message {
+	msg := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     StringPtr(m.Topic),
+			Partition: int32(m.Partition),
+			Offset:    kafka.Offset(m.Offset),
+		},
+		Value:     m.Value,
+		Key:       m.Key,
+		Timestamp: m.Timestamp,
+		Opaque:    m.Opaque,
+	}
+
+	headers := make([]kafka.Header, 0)
+	for _, header := range m.Headers {
+		headers = append(headers, kafka.Header{
+			Key:   header.Key,
+			Value: header.Value,
+		})
+	}
+	msg.Headers = headers
+
+	return msg
+}
+
 // MessageBuilder represents a Kafka message and provides a fluent API for
 // constructing a message to be produced to Kafka.
 type MessageBuilder struct {
@@ -134,6 +161,7 @@ func (m *MessageBuilder) Opaque(o interface{}) *MessageBuilder {
 // report is delivered on the provided channel. If the channel is nil than Send
 // operates as fire-and-forget.
 func (m *MessageBuilder) Send(deliveryChan chan kafka.Event) error {
+	// todo: The API should match the producer API
 	if m.producer == nil {
 		return fmt.Errorf("illegal state: producer is nil: MessageBuilder must be created by Producer using M() method")
 	}
@@ -162,6 +190,7 @@ func (m *MessageBuilder) Send(deliveryChan chan kafka.Event) error {
 // This method is blocking and will wait until the delivery report is received
 // from Kafka.
 func (m *MessageBuilder) SendAndWait() error {
+	// todo: The API should match the producer API
 	deliveryChan := make(chan kafka.Event)
 	defer close(deliveryChan)
 
@@ -188,6 +217,7 @@ func (m *MessageBuilder) SendAndWait() error {
 // Message builds and returns a *kafka.Message instance from the Confluent Kafka
 // library.
 func (m *MessageBuilder) Message() (*kafka.Message, error) {
+	// todo: this should return a shiva message instead
 	if m.err != nil {
 		return nil, m.err
 	}
