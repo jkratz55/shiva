@@ -14,6 +14,7 @@ type ConsumerTelemetryProvider interface {
 }
 
 type ProducerTelemetryProvider interface {
+	// todo: need to determine which metrics to capture
 }
 
 type NopConsumerTelemetryProvider struct {
@@ -33,4 +34,5 @@ func (n NopConsumerTelemetryProvider) RecordHandlerExecutionDuration(_ string, _
 func (n NopConsumerTelemetryProvider) RecordLag(_ string, _ string, _ string, _ string, _ int64) {}
 
 type NopProducerTelemetryProvider struct {
+	// todo: implement interface once the metrics are identified
 }

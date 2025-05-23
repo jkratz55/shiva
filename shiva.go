@@ -49,7 +49,7 @@ const (
 
 	// UnlimitedRetries is the maximum integer value for the platform.
 	//
-	// Technically, UnlimitedRetries is not unlimited but from a practical perspective is operates
+	// Technically, UnlimitedRetries is not unlimited but from a practical perspective it operates
 	// as if it were infinite.
 	UnlimitedRetries = math.MaxInt
 )

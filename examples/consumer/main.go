@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/sdk/metric"
@@ -21,6 +22,9 @@ import (
 type ExampleHandler struct{}
 
 func (e ExampleHandler) Handle(msg shiva.Message) error {
+	// Simulate time it takes to process a message
+	time.Sleep(time.Millisecond * 10)
+
 	fmt.Println(msg.Key)
 	return nil
 }

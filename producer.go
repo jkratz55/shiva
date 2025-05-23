@@ -28,6 +28,11 @@ type Producer struct {
 	base         baseProducer
 	loggerStopCh chan struct{}
 	eventStopCh  chan struct{}
+
+	// callbacks
+	onMessageDelivered func(report DeliveryReport)
+	onErr              func(err error)
+	onStats            func(stats map[string]any)
 }
 
 func NewProducer(config KafkaConfig) *Producer {
