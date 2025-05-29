@@ -1,8 +1,21 @@
 package shiva
 
 import (
+	"context"
 	"time"
+
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
+
+type Span interface {
+	SetAttributes(attrs ...any)
+	RecordError(err error)
+	EndSpan()
+}
+
+type Tracer interface {
+	StartSpan(ctx context.Context, name string) (context.Context, Span)
+}
 
 type ConsumerTelemetryProvider interface {
 	RecordMessageProcessed(handler string, topic string)
@@ -11,9 +24,11 @@ type ConsumerTelemetryProvider interface {
 	RecordKafkaError(handler string, topic string, code int)
 	RecordHandlerExecutionDuration(handler string, topic string, dur time.Duration)
 	RecordLag(handler string, groupId string, topic string, partition string, lag int64)
+	Tracer
 }
 
 type ProducerTelemetryProvider interface {
+	Tracer
 	// todo: need to determine which metrics to capture
 }
 
@@ -36,3 +51,19 @@ func (n NopConsumerTelemetryProvider) RecordLag(_ string, _ string, _ string, _ 
 type NopProducerTelemetryProvider struct {
 	// todo: implement interface once the metrics are identified
 }
+
+type ProducerHook interface {
+	Produce(msg *kafka.Message) error
+}
+
+type ConsumerHook interface {
+	Consume(msg *kafka.Message)
+}
+
+type NopProducerHook struct{}
+
+func (n NopProducerHook) Consume(msg *kafka.Message) {}
+
+type NopConsumerHook struct{}
+
+func (n NopConsumerHook) Consume(msg *kafka.Message) {}

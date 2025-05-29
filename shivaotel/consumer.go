@@ -7,6 +7,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ConsumerTelemetryProvider instruments and captures metrics for a Consumer using
@@ -21,6 +22,9 @@ type ConsumerTelemetryProvider struct {
 	handlerLatency    metric.Float64Histogram
 	rebalances        metric.Int64Counter
 	lag               metric.Int64Gauge
+
+	// tracing
+	tracer trace.Tracer
 }
 
 // NewConsumerTelemetryProvider initializes a new ConsumerTelemetryProvider.
@@ -125,4 +129,11 @@ func (c *ConsumerTelemetryProvider) RecordLag(handler string, groupId string, to
 		attribute.String(labelGroup, groupId),
 		attribute.String(labelTopic, topic),
 		attribute.String(labelPartition, partition)))
+}
+
+func (c *ConsumerTelemetryProvider) StartTrace(ctx context.Context, name string) (context.Context, *SpanWrapper) {
+	ctx, span := c.tracer.Start(ctx, name)
+	return ctx, &SpanWrapper{
+		Span: span,
+	}
 }

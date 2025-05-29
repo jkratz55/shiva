@@ -1,5 +1,11 @@
 package shivaotel
 
+import (
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+)
+
 // todo: Implement tracing!
 
 const (
@@ -12,3 +18,20 @@ const (
 	labelGroup     = "groupId"
 	labelCode      = "code"
 )
+
+type SpanWrapper struct {
+	trace.Span
+}
+
+func (sp *SpanWrapper) SetAttributes(attrs ...any) {
+	sp.Span.SetAttributes(attribute.String("", ""))
+}
+
+func (sp *SpanWrapper) RecordError(err error) {
+	sp.Span.SetStatus(codes.Error, err.Error())
+	sp.Span.RecordError(err)
+}
+
+func (sp *SpanWrapper) EndSpan() {
+	sp.End()
+}
