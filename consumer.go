@@ -9,6 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
@@ -57,6 +62,7 @@ type Consumer struct {
 	onOffsetsCommitted func(offsets TopicPartitions, err error)
 	name               string
 	telemetryProvider  ConsumerTelemetryProvider
+	hooks              ConsumerHook
 
 	rebalanceCh      chan struct{}
 	lagMonitorStopCh chan struct{}
@@ -281,6 +287,22 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 
 	startTs := time.Now()
 
+	// todo: need to extract this code
+	carrier := propagation.HeaderCarrier{}
+	for _, header := range msg.Headers {
+		carrier.Set(header.Key, string(header.Value))
+	}
+
+	tracer := otel.Tracer("shiva")
+	ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+	ctx, span := tracer.Start(ctx, "kafka.consumer.processMessage") // todo: Handler should accept context.Context
+	defer span.End()
+
+	span.SetAttributes(attribute.String("kafka.message.topic", *msg.TopicPartition.Topic),
+		attribute.Int("kafka.message.partition", int(msg.TopicPartition.Partition)),
+		attribute.Int64("kafka.message.offset", int64(msg.TopicPartition.Offset)),
+		attribute.String("kafka.message.key", string(msg.Key)))
+
 	shivaMsg := mapMessage(msg)
 	err := c.handler.Handle(shivaMsg)
 
@@ -289,6 +311,8 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 
 	if err != nil {
 		c.telemetryProvider.RecordHandlerError(c.name, c.topic)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 
 		// If the Handler returns an error signaling, the message was not successfully
 		// processed. The DeadLetterHandler is invoked to provide a last opportunity

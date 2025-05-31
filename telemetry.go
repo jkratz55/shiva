@@ -48,6 +48,10 @@ func (n NopConsumerTelemetryProvider) RecordHandlerExecutionDuration(_ string, _
 
 func (n NopConsumerTelemetryProvider) RecordLag(_ string, _ string, _ string, _ string, _ int64) {}
 
+func (n NopConsumerTelemetryProvider) StartSpan(ctx context.Context, name string) (context.Context, Span) {
+	return ctx, &NopSpan{}
+}
+
 type NopProducerTelemetryProvider struct {
 	// todo: implement interface once the metrics are identified
 }
@@ -57,7 +61,7 @@ type ProducerHook interface {
 }
 
 type ConsumerHook interface {
-	Consume(msg *kafka.Message)
+	Trace(msg Message) (context.Context, func(err error))
 }
 
 type NopProducerHook struct{}
@@ -67,3 +71,11 @@ func (n NopProducerHook) Consume(msg *kafka.Message) {}
 type NopConsumerHook struct{}
 
 func (n NopConsumerHook) Consume(msg *kafka.Message) {}
+
+type NopSpan struct{}
+
+func (n NopSpan) SetAttributes(attrs ...any) {}
+
+func (n NopSpan) RecordError(err error) {}
+
+func (n NopSpan) EndSpan() {}

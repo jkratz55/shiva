@@ -5,6 +5,12 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/jkratz55/shiva"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -131,9 +137,38 @@ func (c *ConsumerTelemetryProvider) RecordLag(handler string, groupId string, to
 		attribute.String(labelPartition, partition)))
 }
 
-func (c *ConsumerTelemetryProvider) StartTrace(ctx context.Context, name string) (context.Context, *SpanWrapper) {
+func (c *ConsumerTelemetryProvider) StartSpan(ctx context.Context, name string) (context.Context, shiva.Span) {
 	ctx, span := c.tracer.Start(ctx, name)
 	return ctx, &SpanWrapper{
 		Span: span,
 	}
+}
+
+type ConsumerTracer struct {
+	tracer trace.Tracer
+}
+
+func (c *ConsumerTracer) Trace(msg shiva.Message) (context.Context, func(err error)) {
+	carrier := propagation.HeaderCarrier{}
+	for _, header := range msg.Headers {
+		carrier.Set(header.Key, string(header.Value))
+	}
+
+	ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+	ctx, span := c.tracer.Start(ctx, "kafka.consumer.processMessage")
+
+	span.SetAttributes(attribute.String("kafka.message.topic", msg.Topic),
+		attribute.Int("kafka.message.partition", msg.Partition),
+		attribute.Int64("kafka.message.offset", msg.Offset),
+		attribute.String("kafka.message.key", string(msg.Key)))
+
+	fn := func(err error) {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}
+
+	return ctx, fn
 }
