@@ -1,6 +1,7 @@
 package shiva
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -128,7 +129,7 @@ type RetryHandler struct {
 	backoffPool sync.Pool
 }
 
-func (r *RetryHandler) Handle(msg Message) error {
+func (r *RetryHandler) Handle(ctx context.Context, msg Message) error {
 	var err error
 
 	bo := r.backoffPool.Get().(*backoff.ExponentialBackOff)
@@ -136,7 +137,7 @@ func (r *RetryHandler) Handle(msg Message) error {
 	defer r.backoffPool.Put(bo)
 
 	for i := 0; i < r.conf.maxAttempts; i++ {
-		handlerErr := r.next.Handle(msg)
+		handlerErr := r.next.Handle(ctx, msg)
 		if handlerErr == nil {
 			// If the next Handler returns a nil error value it is assumed the operation succeeded
 			return nil

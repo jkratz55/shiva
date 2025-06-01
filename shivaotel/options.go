@@ -3,10 +3,12 @@ package shivaotel
 import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type config struct {
 	meterProvider metric.MeterProvider
+	traceProvider trace.TracerProvider
 
 	handlerHistogramBuckets []float64
 }
@@ -14,6 +16,7 @@ type config struct {
 func newConfig(opts ...baseOption) *config {
 	conf := &config{
 		meterProvider:           otel.GetMeterProvider(),
+		traceProvider:           otel.GetTracerProvider(),
 		handlerHistogramBuckets: []float64{0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.000},
 	}
 
@@ -72,5 +75,16 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 func WithHandlerHistogramBuckets(buckets ...float64) ConsumerOption {
 	return option(func(opt *config) {
 		opt.handlerHistogramBuckets = buckets
+	})
+}
+
+// WithTraceProvider allows a custom-configured TraceProvider to be used for
+// instrumenting with OpenTelemetry.
+func WithTraceProvider(tp trace.TracerProvider) Option {
+	if tp == nil {
+		tp = otel.GetTracerProvider()
+	}
+	return option(func(opt *config) {
+		opt.traceProvider = tp
 	})
 }

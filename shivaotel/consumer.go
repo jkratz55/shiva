@@ -95,6 +95,7 @@ func NewConsumerTelemetryProvider(opts ...ConsumerOption) (*ConsumerTelemetryPro
 		handlerLatency:    handlerLatency,
 		rebalances:        rebalances,
 		lag:               lag,
+		tracer:            config.traceProvider.Tracer(Scope),
 	}, nil
 }
 
@@ -137,25 +138,19 @@ func (c *ConsumerTelemetryProvider) RecordLag(handler string, groupId string, to
 		attribute.String(labelPartition, partition)))
 }
 
-func (c *ConsumerTelemetryProvider) StartSpan(ctx context.Context, name string) (context.Context, shiva.Span) {
-	ctx, span := c.tracer.Start(ctx, name)
-	return ctx, &SpanWrapper{
-		Span: span,
-	}
-}
-
-type ConsumerTracer struct {
-	tracer trace.Tracer
-}
-
-func (c *ConsumerTracer) Trace(msg shiva.Message) (context.Context, func(err error)) {
+// Trace starts a new span/trace for the inbound Kafka message that is about to be processed. Trace
+// returns a context.Context and a func. The context must be passed down to all future calls to
+// properly trace the flow of processing the message. The func returned is a callback that must be
+// invoked when the message has been processed (regardless if successful or not). The func returned
+// records additional data on the span if err is non-nil, and ends the span.
+func (c *ConsumerTelemetryProvider) Trace(msg shiva.Message) (context.Context, func(err error)) {
 	carrier := propagation.HeaderCarrier{}
 	for _, header := range msg.Headers {
 		carrier.Set(header.Key, string(header.Value))
 	}
 
 	ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
-	ctx, span := c.tracer.Start(ctx, "kafka.consumer.processMessage")
+	ctx, span := c.tracer.Start(ctx, "kafka.consumer.handler")
 
 	span.SetAttributes(attribute.String("kafka.message.topic", msg.Topic),
 		attribute.Int("kafka.message.partition", msg.Partition),

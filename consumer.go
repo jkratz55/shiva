@@ -9,11 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/propagation"
-
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
@@ -62,7 +57,6 @@ type Consumer struct {
 	onOffsetsCommitted func(offsets TopicPartitions, err error)
 	name               string
 	telemetryProvider  ConsumerTelemetryProvider
-	hooks              ConsumerHook
 
 	rebalanceCh      chan struct{}
 	lagMonitorStopCh chan struct{}
@@ -286,40 +280,26 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 	}
 
 	startTs := time.Now()
-
-	// todo: need to extract this code
-	carrier := propagation.HeaderCarrier{}
-	for _, header := range msg.Headers {
-		carrier.Set(header.Key, string(header.Value))
-	}
-
-	tracer := otel.Tracer("shiva")
-	ctx := otel.GetTextMapPropagator().Extract(context.Background(), carrier)
-	ctx, span := tracer.Start(ctx, "kafka.consumer.processMessage") // todo: Handler should accept context.Context
-	defer span.End()
-
-	span.SetAttributes(attribute.String("kafka.message.topic", *msg.TopicPartition.Topic),
-		attribute.Int("kafka.message.partition", int(msg.TopicPartition.Partition)),
-		attribute.Int64("kafka.message.offset", int64(msg.TopicPartition.Offset)),
-		attribute.String("kafka.message.key", string(msg.Key)))
-
 	shivaMsg := mapMessage(msg)
-	err := c.handler.Handle(shivaMsg)
+	ctx, onDone := c.telemetryProvider.Trace(shivaMsg)
+
+	err := c.handler.Handle(ctx, shivaMsg)
 
 	handlerDur := time.Since(startTs)
 	c.telemetryProvider.RecordHandlerExecutionDuration(c.name, c.topic, handlerDur)
 
 	if err != nil {
 		c.telemetryProvider.RecordHandlerError(c.name, c.topic)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
 
 		// If the Handler returns an error signaling, the message was not successfully
 		// processed. The DeadLetterHandler is invoked to provide a last opportunity
 		// to do something with the message before the Consumer moves on to the next
 		// Message.
-		c.dlHandler.Handle(shivaMsg, err)
+		c.dlHandler.Handle(ctx, shivaMsg, err)
 	}
+
+	// End trace and record handler error, if there was one
+	onDone(err)
 
 	// If the AcknowledgmentStrategy is post-processing the message is acknowledged after the Handler
 	// is invoked, regardless if it returns an error value. This follows the at-least-once delivery

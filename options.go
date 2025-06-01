@@ -1,6 +1,7 @@
 package shiva
 
 import (
+	"context"
 	"time"
 )
 
@@ -26,7 +27,7 @@ func newOptions(opts ...baseOption) *options {
 	o := &options{
 		logger:                    NewNopLogger(),
 		onErr:                     func(err error) {},
-		deadLetterHandler:         DeadLetterHandlerFunc(func(msg Message, err error) {}),
+		deadLetterHandler:         DeadLetterHandlerFunc(func(ctx context.Context, msg Message, err error) {}),
 		onAssigned:                func(tps TopicPartitions) {},
 		onRevoked:                 func(tps TopicPartitions) {},
 		onStats:                   func(data map[string]any) {},
@@ -107,7 +108,7 @@ func WithName(name string) Option {
 // when the Handler returns an error signaling it failed to process the message.
 func WithDeadLetterHandler(dlh DeadLetterHandler) ConsumerOption {
 	if dlh == nil {
-		dlh = DeadLetterHandlerFunc(func(msg Message, err error) {})
+		dlh = DeadLetterHandlerFunc(func(ctx context.Context, msg Message, err error) {})
 	}
 	return consumerOption(func(opt *options) {
 		opt.deadLetterHandler = dlh

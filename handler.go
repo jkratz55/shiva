@@ -1,5 +1,9 @@
 package shiva
 
+import (
+	"context"
+)
+
 // A Handler handles and processes message from Kafka.
 //
 // When the Consumer receives a message from Kafka it invokes the Handler to handle
@@ -11,15 +15,15 @@ package shiva
 // then invoke the DeadLetterHandler if one is configured. A nil error value will
 // always be interpreted as the Handler successfully processed the Message.
 type Handler interface {
-	Handle(msg Message) error
+	Handle(ctx context.Context, msg Message) error
 }
 
 // A HandlerFunc type is an adapter to allow the use of ordinary functions as a
 // Handler.
-type HandlerFunc func(msg Message) error
+type HandlerFunc func(ctx context.Context, msg Message) error
 
-func (f HandlerFunc) Handle(msg Message) error {
-	return f(msg)
+func (f HandlerFunc) Handle(ctx context.Context, msg Message) error {
+	return f(ctx, msg)
 }
 
 // Middleware is a function type that wraps a Handler to enable intercepting
