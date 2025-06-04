@@ -3,6 +3,8 @@ package shiva
 import (
 	"context"
 	"time"
+
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
 type ConsumerTelemetryProvider interface {
@@ -17,6 +19,7 @@ type ConsumerTelemetryProvider interface {
 
 type ProducerTelemetryProvider interface {
 	// todo: need to determine which metrics to capture
+	Trace(ctx context.Context, msg *kafka.Message) (context.Context, func(err error))
 }
 
 type NopConsumerTelemetryProvider struct {

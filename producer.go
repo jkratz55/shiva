@@ -2,6 +2,7 @@ package shiva
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -33,6 +34,9 @@ type Producer struct {
 	onMessageDelivered func(report DeliveryReport)
 	onErr              func(err error)
 	onStats            func(stats map[string]any)
+
+	// telemetry
+	telemetryProvider ProducerTelemetryProvider
 }
 
 func NewProducer(config KafkaConfig) *Producer {
@@ -48,14 +52,151 @@ func (p *Producer) M() *MessageBuilder {
 	}
 }
 
-func (p *Producer) Produce(m Message, deliveryCh <-chan DeliveryReport) error {
-	// todo: implement me
+// ProduceAsync produces a message to Kafka asynchronously. The message will be
+// transmitted to the Kafka brokers, and the delivery report will be sent to the
+// provided delivery channel.
+//
+// ProduceAsync returns immediately after the message has been queued to be
+// transmitted to the Kafka brokers. The delivery report will be sent to the
+// provided delivery channel when the message has been successfully transmitted
+// to the Kafka brokers or an error has occurred.
+//
+// ProduceAsync returns an error only if the message could not be queued for delivery
+// but does not indicate whether the message was successfully transmitted to the
+// Kafka brokers. The caller must check the delivery report to determine if the
+// message was successfully transmitted to the Kafka brokers.
+//
+// Note providing a nil delivery channel will cause the delivery report to be
+// discarded effectively making ProduceAsync a fire and forget operation.
+//
+// The context is used for tracing purposes. The context being canceled or exceeding
+// its deadline has no effect. This is because the underlying Confluent Kafka GO
+// client does not use or respect the context.
+func (p *Producer) ProduceAsync(ctx context.Context, m Message, deliveryCh chan DeliveryReport) error {
+	var err error
+
+	kafkaMessage := toKafkaMessage(m)
+	kafkaMessage.TopicPartition.Partition = kafka.PartitionAny
+
+	_, traceDone := p.telemetryProvider.Trace(ctx, kafkaMessage)
+	defer func() {
+		traceDone(err)
+	}()
+
+	var internalDeliveryCh chan kafka.Event
+	if deliveryCh != nil {
+		internalDeliveryCh = make(chan kafka.Event, 1)
+	}
+
+	err = p.base.Produce(kafkaMessage, internalDeliveryCh)
+	if err != nil {
+		return fmt.Errorf("kafka: failed to enqueue message for delivery: %w", err)
+	}
+
+	// If there is a delivery channel provided, a goroutine is started to read from
+	// the internal delivery channel and send the result to the provided delivery as
+	// to not expose the internals of the kafka client. If no delivery channel is
+	// provided, the delivery report is discarded.
+	if deliveryCh != nil {
+		go func() {
+			defer close(internalDeliveryCh)
+			result := <-internalDeliveryCh
+			switch event := result.(type) {
+			case *kafka.Message:
+				deliveryCh <- DeliveryReport{
+					Error:     nil,
+					ErrorCode: 0,
+					Topic:     *event.TopicPartition.Topic,
+					Partition: int(event.TopicPartition.Partition),
+					Offset:    int64(event.TopicPartition.Offset),
+					Opaque:    event.Opaque,
+				}
+			case kafka.Error:
+				deliveryCh <- DeliveryReport{
+					Error:     event,
+					ErrorCode: int(event.Code()),
+				}
+			default:
+				deliveryCh <- DeliveryReport{
+					Error:     fmt.Errorf("kafka: unexpected event type: %T", event),
+					ErrorCode: -9999,
+				}
+			}
+		}()
+	}
+
+	// --------------------------------------------------------------------------------------------
+	// todo: extract and abstract otel tracing code
+
+	// ctx, span := otel.Tracer("shiva").Start(ctx, "kafka.produce")
+	// defer span.End()
+	//
+	// headers := shivaotel.KafkaHeaderCarrier{}
+	// otel.GetTextMapPropagator().Inject(ctx, &headers)
+	//
+	// mappedMessage := toKafkaMessage(m)
+	// mappedMessage.Headers = append(mappedMessage.Headers, []kafka.Header(headers)...)
+	//
+	// err := p.base.Produce(mappedMessage, nil)
+	//
+	// if err != nil {
+	// 	span.RecordError(err)
+	// 	return err
+	// }
+
+	// --------------------------------------------------------------------------------------------
+
 	return nil
 }
 
-func (p *Producer) ProduceAndWait(m Message) error {
-	// todo: implement me
-	return nil
+// Produce produces a message to Kafka synchronously. The message will be queued for
+// transmission to the Kafka brokers, and Produce will block until the message has been
+// delivered to the Kafka brokers or an error has occurred.
+//
+// Produce will return an error under the following conditions:
+//
+// 1. The message could not be queued for delivery.
+// 2. The message could not be delivered to Kafka.
+// 3. The context was canceled or exceeded its deadline.
+//
+// It is important to note that the underlying Confluent Kafka GO client does not use
+// or respect the context. If the context is canceled or exceeds its deadline, it does
+// not interrupt the delivery of the message. Instead, it simply aborts waiting on the
+// delivery report from Kafka. Generally speaking, the context is mainly used for tracing
+// purposes.
+func (p *Producer) Produce(ctx context.Context, m Message) error {
+	var err error
+
+	kafkaMessage := toKafkaMessage(m)
+	kafkaMessage.TopicPartition.Partition = kafka.PartitionAny
+
+	ctx, traceDone := p.telemetryProvider.Trace(ctx, kafkaMessage)
+	defer func() {
+		traceDone(err)
+	}()
+
+	deliveryCh := make(chan kafka.Event, 1)
+	err = p.base.Produce(kafkaMessage, deliveryCh)
+	if err != nil {
+		return fmt.Errorf("kafka: failed to enqueue message for delivery: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case result := <-deliveryCh:
+		switch event := result.(type) {
+		case *kafka.Message:
+			if event.TopicPartition.Error != nil {
+				return fmt.Errorf("kafka: failed to deliver message: %w", event.TopicPartition.Error)
+			}
+			return nil
+		case kafka.Error:
+			return fmt.Errorf("kafka: failed to deliver message: %w", event)
+		default:
+			return fmt.Errorf("kafka: unexpected event type: %T", event)
+		}
+	}
 }
 
 // Len returns the number of messages and requests waiting to be transmitted to
@@ -66,6 +207,10 @@ func (p *Producer) Len() int {
 
 // Purge removes all messages within librdkafka's internal queue waiting to be
 // transmitted to the Kafka brokers.
+//
+// Note that Purge does not remove any messages that have already been delivered
+// to the Kafka brokers. This method should be used with extreme caution unless
+// you don't care if messages are delivered or not.
 func (p *Producer) Purge() error {
 	return p.base.Purge(kafka.PurgeQueue)
 }
