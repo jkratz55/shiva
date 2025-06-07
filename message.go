@@ -1,6 +1,7 @@
 package shiva
 
 import (
+	"context"
 	"encoding"
 	"encoding/json"
 	"errors"
@@ -112,9 +113,9 @@ func (m *MessageBuilder) Key(k string) *MessageBuilder {
 //
 // The behavior of Value varies based on the type of v:
 //
-//		  []byte - uses value as is
-//		  string - cast the value as []byte
-//	   encoding.BinaryMarshaler - invokes MarshalBinary and uses the resulting []byte
+//	[]byte - uses value as is
+//	string - cast the value as []byte
+//	encoding.BinaryMarshaler - invokes MarshalBinary and uses the resulting []byte
 //
 // If v is not any of the above types Value will attempt to marshal v as JSON.
 func (m *MessageBuilder) Value(v interface{}) *MessageBuilder {
@@ -156,12 +157,11 @@ func (m *MessageBuilder) Opaque(o interface{}) *MessageBuilder {
 	return m
 }
 
-// Send produces a message to Kafka asynchronously and returns immediately if
+// ProduceAsync produces a message to Kafka asynchronously and returns immediately if
 // the message was enqueued successfully, otherwise returns an error. The delivery
 // report is delivered on the provided channel. If the channel is nil than Send
 // operates as fire-and-forget.
-func (m *MessageBuilder) Send(deliveryChan chan kafka.Event) error {
-	// todo: The API should match the producer API
+func (m *MessageBuilder) ProduceAsync(ctx context.Context, deliveryCh chan DeliveryReport) error {
 	if m.producer == nil {
 		return fmt.Errorf("illegal state: producer is nil: MessageBuilder must be created by Producer using M() method")
 	}
@@ -178,72 +178,35 @@ func (m *MessageBuilder) Send(deliveryChan chan kafka.Event) error {
 		return fmt.Errorf("kafka: build message: %w", err)
 	}
 
-	err = m.producer.base.Produce(msg, deliveryChan)
-	if err != nil {
-		return WrapAsRetryable(fmt.Errorf("kafka: enqueue message: %w", err))
-	}
-	return nil
+	return m.producer.ProduceAsync(ctx, msg, deliveryCh)
 }
 
-// SendAndWait produces a message to Kafka and waits for the delivery report.
+// Produce produces a message to Kafka and waits for the delivery report.
 //
 // This method is blocking and will wait until the delivery report is received
 // from Kafka.
-func (m *MessageBuilder) SendAndWait() error {
-	// todo: The API should match the producer API
-	deliveryChan := make(chan kafka.Event)
-	defer close(deliveryChan)
-
-	err := m.Send(deliveryChan)
+func (m *MessageBuilder) Produce(ctx context.Context) error {
+	msg, err := m.Message()
 	if err != nil {
-		return err
+		return fmt.Errorf("kafka: build message: %w", err)
 	}
-
-	e := <-deliveryChan
-	switch ev := e.(type) {
-	case *kafka.Message:
-		if ev.TopicPartition.Error != nil {
-			return fmt.Errorf("kafka delivery failure: %w", ev.TopicPartition.Error)
-		}
-	case kafka.Error:
-		return fmt.Errorf("kafka error: %w", ev)
-	default:
-		return fmt.Errorf("unexpected kafka event: %T", e)
-	}
-
-	return nil
+	return m.producer.Produce(ctx, msg)
 }
 
 // Message builds and returns a *kafka.Message instance from the Confluent Kafka
 // library.
-func (m *MessageBuilder) Message() (*kafka.Message, error) {
-	// todo: this should return a shiva message instead
+func (m *MessageBuilder) Message() (Message, error) {
 	if m.err != nil {
-		return nil, m.err
-	}
-	msg := &kafka.Message{
-		TopicPartition: kafka.TopicPartition{
-			Topic:     &m.topic,
-			Partition: kafka.PartitionAny,
-		},
-		Value:  m.value,
-		Opaque: m.opaque,
-	}
-	if m.key != "" {
-		msg.Key = []byte(m.key)
+		return Message{}, m.err
 	}
 
-	if len(m.headers) > 0 {
-		headers := make([]kafka.Header, len(m.headers))
-		for i, h := range m.headers {
-			headers[i] = kafka.Header{
-				Key:   h.Key,
-				Value: h.Value,
-			}
-		}
-		msg.Headers = headers
+	msg := Message{
+		Topic:   m.topic,
+		Key:     []byte(m.key),
+		Value:   m.value,
+		Headers: m.headers,
+		Opaque:  m.opaque,
 	}
-
 	return msg, nil
 }
 

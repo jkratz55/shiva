@@ -90,7 +90,7 @@ func (p *Producer) ProduceAsync(ctx context.Context, m Message, deliveryCh chan 
 
 	err = p.base.Produce(kafkaMessage, internalDeliveryCh)
 	if err != nil {
-		return fmt.Errorf("kafka: failed to enqueue message for delivery: %w", err)
+		return WrapAsRetryable(fmt.Errorf("kafka: enqueue message: %w", err))
 	}
 
 	// If there is a delivery channel provided, a goroutine is started to read from
@@ -178,7 +178,7 @@ func (p *Producer) Produce(ctx context.Context, m Message) error {
 	deliveryCh := make(chan kafka.Event, 1)
 	err = p.base.Produce(kafkaMessage, deliveryCh)
 	if err != nil {
-		return fmt.Errorf("kafka: failed to enqueue message for delivery: %w", err)
+		return WrapAsRetryable(fmt.Errorf("kafka: enqueue message: %w", err))
 	}
 
 	select {
@@ -231,10 +231,6 @@ func (p *Producer) Close() {
 // IsClosed returns true if the producer has been closed, otherwise false.
 func (p *Producer) IsClosed() bool {
 	return p.base.IsClosed()
-}
-
-func (p *Producer) produce() {
-	// todo: implement me, if needed, not sure yet
 }
 
 // DeliveryReport represents the result of producing a method to Kafka.

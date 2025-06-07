@@ -21,7 +21,7 @@ import (
 // key. In the real world you'd add your code/logic to process the message.
 type ExampleHandler struct{}
 
-func (e ExampleHandler) Handle(msg shiva.Message) error {
+func (e ExampleHandler) Handle(ctx context.Context, msg shiva.Message) error {
 	// Simulate time it takes to process a message
 	time.Sleep(time.Millisecond * 10)
 
@@ -44,7 +44,7 @@ func NewDeadLetterHandler(l *slog.Logger) *DeadLetterHandler {
 	}
 }
 
-func (d DeadLetterHandler) Handle(msg shiva.Message, err error) {
+func (d DeadLetterHandler) Handle(ctx context.Context, msg shiva.Message, err error) {
 	d.logger.Error("Something went wrong",
 		slog.String("err", err.Error()),
 		slog.Group("kafka",
