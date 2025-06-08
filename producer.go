@@ -29,19 +29,102 @@ type Producer struct {
 	base         baseProducer
 	loggerStopCh chan struct{}
 	eventStopCh  chan struct{}
+	logChan      chan kafka.LogEvent
 
 	// callbacks
-	onMessageDelivered func(report DeliveryReport)
-	onErr              func(err error)
-	onStats            func(stats map[string]any)
+	onErr   func(err error)
+	onStats func(stats map[string]any)
 
 	// telemetry
 	telemetryProvider ProducerTelemetryProvider
 }
 
-func NewProducer(config KafkaConfig) *Producer {
-	// todo: implement me
-	return &Producer{}
+func NewProducer(conf KafkaConfig, opts ...ProducerOption) (*Producer, error) {
+
+	// Initialize the defaults for the KafkaConfig instance
+	conf.init()
+
+	// Apply any options provided
+	baseOpts := make([]baseOption, len(opts))
+	for i, opt := range opts {
+		baseOpts[i] = opt
+	}
+	options := newOptions(baseOpts...)
+
+	configMap := producerConfigMap(conf)
+
+	loggerStopCh := make(chan struct{})
+	eventStopCh := make(chan struct{})
+	logChan := make(chan kafka.LogEvent, 1000)
+
+	// Start goroutine to read logs from librdkafka and uses Logger to log
+	// them rather than dumping them to stdout
+	go func(logger Logger) {
+		for {
+			select {
+			case logEvent, ok := <-logChan:
+				if !ok {
+					return
+				}
+				logger.Debug(logEvent.Message,
+					"source", "librdkafka",
+					"name", logEvent.Name,
+					"tag", logEvent.Tag,
+					"level", logEvent.Level)
+			case <-loggerStopCh:
+				return
+			}
+		}
+	}(options.logger)
+
+	// Configure logs from librdkafka to be sent to our logger rather than stdout
+	_ = configMap.SetKey("go.logs.channel.enable", true)
+	_ = configMap.SetKey("go.logs.channel", logChan)
+
+	base, err := kafka.NewProducer(configMap)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: failed to initialize Confluent Kafka Producer: %w", err)
+	}
+
+	producer := &Producer{
+		base:              base,
+		loggerStopCh:      loggerStopCh,
+		eventStopCh:       eventStopCh,
+		logChan:           logChan,
+		onErr:             options.onErr,
+		onStats:           options.onStats,
+		telemetryProvider: options.producerTelemetryProvider,
+	}
+
+	// Poll events in a background goroutine. This has to be done or the internal queue
+	// of librdkaka will overflow and cause it to crash.
+	go producer.pollEvents()
+
+	return producer, nil
+}
+
+func (p *Producer) pollEvents() {
+	events := p.base.Events()
+	for {
+		select {
+		case <-p.eventStopCh:
+			return
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			switch event := event.(type) {
+			case *kafka.Message:
+				if event.TopicPartition.Error != nil {
+					p.telemetryProvider.RecordDeliveryError(*event.TopicPartition.Topic)
+				} else {
+					p.telemetryProvider.RecordMessageDelivered(*event.TopicPartition.Topic)
+				}
+			case kafka.Error:
+				p.telemetryProvider.RecordKafkaError(int(event.Code()))
+			}
+		}
+	}
 }
 
 // M returns a MessageBuilder that provides a fluent API for building and sending
@@ -78,7 +161,7 @@ func (p *Producer) ProduceAsync(ctx context.Context, m Message, deliveryCh chan 
 	kafkaMessage := toKafkaMessage(m)
 	kafkaMessage.TopicPartition.Partition = kafka.PartitionAny
 
-	_, traceDone := p.telemetryProvider.Trace(ctx, kafkaMessage)
+	ctx, traceDone := p.telemetryProvider.Trace(ctx, kafkaMessage)
 	defer func() {
 		traceDone(err)
 	}()
@@ -90,6 +173,7 @@ func (p *Producer) ProduceAsync(ctx context.Context, m Message, deliveryCh chan 
 
 	err = p.base.Produce(kafkaMessage, internalDeliveryCh)
 	if err != nil {
+		p.telemetryProvider.RecordDeliveryEnqueueError(*kafkaMessage.TopicPartition.Topic)
 		return WrapAsRetryable(fmt.Errorf("kafka: enqueue message: %w", err))
 	}
 
@@ -98,20 +182,35 @@ func (p *Producer) ProduceAsync(ctx context.Context, m Message, deliveryCh chan 
 	// to not expose the internals of the kafka client. If no delivery channel is
 	// provided, the delivery report is discarded.
 	if deliveryCh != nil {
-		go func() {
+		go func(ctx context.Context) {
 			defer close(internalDeliveryCh)
+
+			var err error
+			_, done := p.telemetryProvider.TraceDelivery(ctx)
+			defer func() {
+				done(err)
+			}()
+
 			result := <-internalDeliveryCh
 			switch event := result.(type) {
 			case *kafka.Message:
-				deliveryCh <- DeliveryReport{
-					Error:     nil,
-					ErrorCode: 0,
-					Topic:     *event.TopicPartition.Topic,
-					Partition: int(event.TopicPartition.Partition),
-					Offset:    int64(event.TopicPartition.Offset),
-					Opaque:    event.Opaque,
+				if event.TopicPartition.Error == nil {
+					p.telemetryProvider.RecordMessageDelivered(*event.TopicPartition.Topic)
+					deliveryCh <- DeliveryReport{
+						Error:     nil,
+						ErrorCode: 0,
+						Topic:     *event.TopicPartition.Topic,
+						Partition: int(event.TopicPartition.Partition),
+						Offset:    int64(event.TopicPartition.Offset),
+						Opaque:    event.Opaque,
+					}
+				} else {
+					err = event.TopicPartition.Error
+					p.telemetryProvider.RecordDeliveryError(*event.TopicPartition.Topic)
 				}
 			case kafka.Error:
+				err = event
+				p.telemetryProvider.RecordKafkaError(int(event.Code()))
 				deliveryCh <- DeliveryReport{
 					Error:     event,
 					ErrorCode: int(event.Code()),
@@ -122,29 +221,8 @@ func (p *Producer) ProduceAsync(ctx context.Context, m Message, deliveryCh chan 
 					ErrorCode: -9999,
 				}
 			}
-		}()
+		}(ctx)
 	}
-
-	// --------------------------------------------------------------------------------------------
-	// todo: extract and abstract otel tracing code
-
-	// ctx, span := otel.Tracer("shiva").Start(ctx, "kafka.produce")
-	// defer span.End()
-	//
-	// headers := shivaotel.KafkaHeaderCarrier{}
-	// otel.GetTextMapPropagator().Inject(ctx, &headers)
-	//
-	// mappedMessage := toKafkaMessage(m)
-	// mappedMessage.Headers = append(mappedMessage.Headers, []kafka.Header(headers)...)
-	//
-	// err := p.base.Produce(mappedMessage, nil)
-	//
-	// if err != nil {
-	// 	span.RecordError(err)
-	// 	return err
-	// }
-
-	// --------------------------------------------------------------------------------------------
 
 	return nil
 }
@@ -183,15 +261,18 @@ func (p *Producer) Produce(ctx context.Context, m Message) error {
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		err = ctx.Err()
+		return err
 	case result := <-deliveryCh:
 		switch event := result.(type) {
 		case *kafka.Message:
 			if event.TopicPartition.Error != nil {
+				err = event.TopicPartition.Error
 				return fmt.Errorf("kafka: failed to deliver message: %w", event.TopicPartition.Error)
 			}
 			return nil
 		case kafka.Error:
+			err = event
 			return fmt.Errorf("kafka: failed to deliver message: %w", event)
 		default:
 			return fmt.Errorf("kafka: unexpected event type: %T", event)

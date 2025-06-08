@@ -21,6 +21,9 @@ type options struct {
 	statsInterval             int
 	onOffsetsCommitted        func(offsets TopicPartitions, err error)
 	consumerTelemetryProvider ConsumerTelemetryProvider
+
+	// producer options
+	producerTelemetryProvider ProducerTelemetryProvider
 }
 
 func newOptions(opts ...baseOption) *options {
@@ -36,6 +39,7 @@ func newOptions(opts ...baseOption) *options {
 		onOffsetsCommitted:        func(offsets TopicPartitions, err error) {},
 		consumerTelemetryProvider: &NopConsumerTelemetryProvider{},
 		name:                      "",
+		producerTelemetryProvider: &NopProducerTelemetryProvider{},
 	}
 
 	for _, opt := range opts {
@@ -170,5 +174,31 @@ func WithConsumerTelemetryProvider(provider ConsumerTelemetryProvider) ConsumerO
 	}
 	return consumerOption(func(opt *options) {
 		opt.consumerTelemetryProvider = provider
+	})
+}
+
+type ProducerOption interface {
+	baseOption
+	producer()
+}
+
+type producerOption func(opt *options)
+
+var _ ProducerOption = (*producerOption)(nil)
+
+func (c producerOption) apply(opts *options) {
+	c(opts)
+}
+
+func (c producerOption) producer() {}
+
+// WithProducerTelemetryProvider sets an implementation of ProducerTelemetryProvider
+// the Producer will use to record metrics/telemetry.
+func WithProducerTelemetryProvider(provider ProducerTelemetryProvider) ProducerOption {
+	if provider == nil {
+		provider = &NopProducerTelemetryProvider{}
+	}
+	return producerOption(func(opt *options) {
+		opt.producerTelemetryProvider = provider
 	})
 }

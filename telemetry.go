@@ -18,8 +18,12 @@ type ConsumerTelemetryProvider interface {
 }
 
 type ProducerTelemetryProvider interface {
-	// todo: need to determine which metrics to capture
+	RecordMessageDelivered(topic string)
+	RecordDeliveryError(topic string)
+	RecordKafkaError(code int)
+	RecordDeliveryEnqueueError(topic string)
 	Trace(ctx context.Context, msg *kafka.Message) (context.Context, func(err error))
+	TraceDelivery(ctx context.Context) (context.Context, func(err error))
 }
 
 type NopConsumerTelemetryProvider struct {
@@ -42,14 +46,20 @@ func (n NopConsumerTelemetryProvider) Trace(_ Message) (context.Context, func(er
 	return context.Background(), func(err error) {}
 }
 
-type NopProducerTelemetryProvider struct {
-	// todo: implement interface once the metrics are identified
+type NopProducerTelemetryProvider struct{}
+
+func (n NopProducerTelemetryProvider) RecordMessageDelivered(topic string) {}
+
+func (n NopProducerTelemetryProvider) RecordDeliveryError(topic string) {}
+
+func (n NopProducerTelemetryProvider) RecordKafkaError(code int) {}
+
+func (n NopProducerTelemetryProvider) RecordDeliveryEnqueueError(topic string) {}
+
+func (n NopProducerTelemetryProvider) Trace(ctx context.Context, msg *kafka.Message) (context.Context, func(err error)) {
+	return ctx, func(err error) {}
 }
 
-// type ProducerHook interface {
-// 	Produce(msg *kafka.Message) error
-// }
-//
-// type ConsumerHook interface {
-// 	Trace(msg Message) (context.Context, func(err error))
-// }
+func (n NopProducerTelemetryProvider) TraceDelivery(ctx context.Context) (context.Context, func(err error)) {
+	return ctx, func(err error) {}
+}

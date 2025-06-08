@@ -34,11 +34,14 @@ type baseOption interface {
 type Option interface {
 	baseOption
 	consumer()
+	producer()
 }
 
 type option func(opt *config)
 
 func (fn option) consumer() {}
+
+func (fn option) producer() {}
 
 func (fn option) apply(opt *config) {
 	fn(opt)
@@ -88,3 +91,18 @@ func WithTraceProvider(tp trace.TracerProvider) Option {
 		opt.traceProvider = tp
 	})
 }
+
+type ProducerOption interface {
+	baseOption
+	producer()
+}
+
+type producerOption func(opt *config)
+
+var _ ProducerOption = (*producerOption)(nil)
+
+func (p producerOption) apply(opts *config) {
+	p(opts)
+}
+
+func (p producerOption) producer() {}
