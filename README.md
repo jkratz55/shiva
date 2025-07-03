@@ -6,11 +6,11 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/jkratz55/shiva.svg)](https://pkg.go.dev/github.com/jkratz55/shiva)
 [![Go Report Card](https://goreportcard.com/badge/github.com/jkratz55/shiva)](https://goreportcard.com/report/github.com/jkratz55/shiva)
-[![License](https://img.shields.io/github/license/jkratz55/shiva)](https://github.com/jkratz55/shiva/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/jkratz55/shiva)](https://github.com/jkratz55/shiva/blob/master/LICENSE)
 [![Release](https://img.shields.io/github/v/release/jkratz55/shiva)](https://github.com/jkratz55/shiva/releases)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/jkratz55/shiva)](https://go.dev/dl/)
 [![Build Status](https://github.com/jkratz55/shiva/workflows/CI/badge.svg)](https://github.com/jkratz55/shiva/actions)
-[![Coverage Status](https://coveralls.io/repos/github/jkratz55/shiva/badge.svg?branch=master)](https://coveralls.io/github/jkratz55/shiva?branch=main)
+[![Coverage Status](https://coveralls.io/repos/github/jkratz55/shiva/badge.svg?branch=master)](https://coveralls.io/github/jkratz55/shiva?branch=master)
 
 Shiva is a GO library/module for working with Kafka. Shiva provides friendly higher level APIs for consuming and
 producing messages with Kafka. Under the hood Shiva uses the official Confluent Kafka GO
