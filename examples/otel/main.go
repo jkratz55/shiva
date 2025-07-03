@@ -139,7 +139,7 @@ func main() {
 	handler = shiva.Retry(handler,
 		shiva.WithMaxAttempts(5),
 		shiva.WithOnError(retryOnErr),
-		shiva.WithRetryableErrorsOnly(true))(handler)
+		shiva.WithRetryableErrorsOnly(true))
 
 	// Initialize the Consumer with options for dead letter processing, and hooks/callbacks
 	consumer, err := shiva.NewConsumer(kafkaConfig, "test", handler,
