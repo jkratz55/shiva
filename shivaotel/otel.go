@@ -6,8 +6,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// todo: Implement tracing!
-
 const (
 	Scope   = "github.com/jkratz55/shiva"
 	Version = "0.1.0"

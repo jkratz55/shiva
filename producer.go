@@ -280,6 +280,51 @@ func (p *Producer) Produce(ctx context.Context, m Message) error {
 	}
 }
 
+func (p *Producer) Transactional(ctx context.Context, messages []Message) error {
+	if err := p.base.InitTransactions(ctx); err != nil {
+		return fmt.Errorf("kafka: failed to initialize transactions: %w", err)
+	}
+
+	err := p.base.BeginTransaction()
+	deliveryChan := make(chan kafka.Event, len(messages))
+
+	for i := 0; i < len(messages); i++ {
+		msg := toKafkaMessage(messages[i])
+		err = p.base.Produce(msg, deliveryChan)
+		if err != nil {
+			p.telemetryProvider.RecordDeliveryEnqueueError(*msg.TopicPartition.Topic)
+			abortErr := p.base.AbortTransaction(ctx)
+			if abortErr != nil {
+				return fmt.Errorf("kafka: failed to abort transaction: %w: failed to produce message: %w", abortErr, err)
+			}
+			return err
+		}
+	}
+
+	for i := 0; i < len(messages); i++ {
+		event := <-deliveryChan
+		switch ev := event.(type) {
+		case *kafka.Message:
+			if ev.TopicPartition.Error != nil {
+				p.telemetryProvider.RecordDeliveryError(*ev.TopicPartition.Topic)
+				abortErr := p.base.AbortTransaction(ctx)
+				if abortErr != nil {
+					return fmt.Errorf("kafka: failed to abort transaction: %w: message delivery failed: %w", abortErr, ev.TopicPartition.Error)
+				}
+				return fmt.Errorf("kafka: transaction aborted: delivery failure: %w", ev.TopicPartition.Error)
+			}
+		}
+	}
+	close(deliveryChan)
+
+	err = p.base.CommitTransaction(ctx)
+	if err != nil {
+		return fmt.Errorf("kafka: failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
 // Len returns the number of messages and requests waiting to be transmitted to
 // the broker as well as delivery reports queued for the application.
 func (p *Producer) Len() int {
@@ -332,19 +377,18 @@ func producerConfigMap(conf KafkaConfig) *kafka.ConfigMap {
 
 	// Configure base properties/parameters
 	configMap := &kafka.ConfigMap{
-		"bootstrap.servers": strings.Join(conf.BootstrapServers, ","),
-		"security.protocol": conf.SecurityProtocol.String(),
-		"message.max.bytes": conf.MessageMaxBytes,
-		// "enable.idempotence":                 conf.Idempotence, // fixme: needs added to config
+		"bootstrap.servers":                  strings.Join(conf.BootstrapServers, ","),
+		"security.protocol":                  conf.SecurityProtocol.String(),
+		"message.max.bytes":                  conf.MessageMaxBytes,
+		"enable.idempotence":                 conf.Idempotence,
 		"request.required.acks":              conf.RequiredAcks.value(),
 		"topic.metadata.refresh.interval.ms": 300000,
 		"connections.max.idle.ms":            600000,
 	}
 
-	// fixme: needs addressed in config
-	// if conf.TransactionID != "" {
-	// 	_ = configMap.SetKey("transactional.id", conf.TransactionID)
-	// }
+	if conf.TransactionID != "" {
+		_ = configMap.SetKey("transactional.id", conf.TransactionID)
+	}
 
 	// If SSL is enabled any additional SSL configuration provided needs added
 	// to the configmap
