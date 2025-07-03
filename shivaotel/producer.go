@@ -92,6 +92,9 @@ func (p *ProducerTelemetryProvider) RecordDeliveryEnqueueError(topic string) {
 func (p *ProducerTelemetryProvider) Trace(ctx context.Context, msg *kafka.Message) (context.Context, func(err error)) {
 
 	ctx, span := p.tracer.Start(ctx, "kafka.producer")
+	span.SetAttributes(attribute.String("kafka.message.topic", *msg.TopicPartition.Topic),
+		attribute.Int("kafka.message.partition", int(msg.TopicPartition.Partition)),
+		attribute.String("kafka.message.key", string(msg.Key)))
 
 	headers := KafkaHeaderCarrier{}
 	otel.GetTextMapPropagator().Inject(ctx, &headers)
