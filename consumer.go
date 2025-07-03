@@ -437,7 +437,7 @@ func (c *Consumer) Lag() (map[string]int64, error) {
 	}
 
 	for _, tp := range positions {
-		_, high, err := c.baseConsumer.GetWatermarkOffsets(*tp.Topic, tp.Partition)
+		_, high, err := c.baseConsumer.QueryWatermarkOffsets(*tp.Topic, tp.Partition, 5000)
 		if err != nil {
 			return lag, fmt.Errorf("get watermark offsets: %w", err)
 		}
