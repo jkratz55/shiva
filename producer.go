@@ -9,7 +9,7 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
-type baseProducer interface {
+type kafkaProducer interface {
 	Produce(m *kafka.Message, deliveryChan chan kafka.Event) error
 	Events() chan kafka.Event
 	Flush(timeoutMs int) int
@@ -23,10 +23,10 @@ type baseProducer interface {
 	Purge(flags int) error
 }
 
-var _ baseProducer = &kafka.Producer{}
+var _ kafkaProducer = &kafka.Producer{}
 
 type Producer struct {
-	base         baseProducer
+	base         kafkaProducer
 	loggerStopCh chan struct{}
 	eventStopCh  chan struct{}
 	logChan      chan kafka.LogEvent
