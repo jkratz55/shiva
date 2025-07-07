@@ -1,0 +1,108 @@
+package shivaotel
+
+import (
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+)
+
+type config struct {
+	meterProvider metric.MeterProvider
+	traceProvider trace.TracerProvider
+
+	handlerHistogramBuckets []float64
+}
+
+func newConfig(opts ...baseOption) *config {
+	conf := &config{
+		meterProvider:           otel.GetMeterProvider(),
+		traceProvider:           otel.GetTracerProvider(),
+		handlerHistogramBuckets: []float64{0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.000},
+	}
+
+	for _, opt := range opts {
+		opt.apply(conf)
+	}
+
+	return conf
+}
+
+type baseOption interface {
+	apply(opts *config)
+}
+
+type Option interface {
+	baseOption
+	consumer()
+	producer()
+}
+
+type option func(opt *config)
+
+func (fn option) consumer() {}
+
+func (fn option) producer() {}
+
+func (fn option) apply(opt *config) {
+	fn(opt)
+}
+
+type ConsumerOption interface {
+	baseOption
+	consumer()
+}
+
+type consumerOption func(opt *config)
+
+var _ ConsumerOption = (*consumerOption)(nil)
+
+func (c consumerOption) apply(opts *config) {
+	c(opts)
+}
+
+func (c consumerOption) consumer() {}
+
+// WithMeterProvider allows a custom-configured MeterProvider to be used for
+// instrumenting with OpenTelemetry.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	if mp == nil {
+		mp = otel.GetMeterProvider()
+	}
+	return option(func(opt *config) {
+		opt.meterProvider = mp
+	})
+}
+
+// WithHandlerHistogramBuckets sets the buckets for the Consumer Handler execution
+// duration.
+func WithHandlerHistogramBuckets(buckets ...float64) ConsumerOption {
+	return option(func(opt *config) {
+		opt.handlerHistogramBuckets = buckets
+	})
+}
+
+// WithTraceProvider allows a custom-configured TraceProvider to be used for
+// instrumenting with OpenTelemetry.
+func WithTraceProvider(tp trace.TracerProvider) Option {
+	if tp == nil {
+		tp = otel.GetTracerProvider()
+	}
+	return option(func(opt *config) {
+		opt.traceProvider = tp
+	})
+}
+
+type ProducerOption interface {
+	baseOption
+	producer()
+}
+
+type producerOption func(opt *config)
+
+var _ ProducerOption = (*producerOption)(nil)
+
+func (p producerOption) apply(opts *config) {
+	p(opts)
+}
+
+func (p producerOption) producer() {}

@@ -1,5 +1,9 @@
 package shiva
 
+import (
+	"context"
+)
+
 // A DeadLetterHandler handles messages that could not be successfully processed
 // by a Consumer.
 //
@@ -14,13 +18,13 @@ package shiva
 // or instrumentation. Handle does not return an error as it is meaningless to the
 // Consumer as it will move on the next event regardless.
 type DeadLetterHandler interface {
-	Handle(msg Message, err error)
+	Handle(ctx context.Context, msg Message, err error)
 }
 
 // The DeadLetterHandlerFunc type is an adapter to allow the use of ordinary functions
 // as a DeadLetterHandler
-type DeadLetterHandlerFunc func(msg Message, err error)
+type DeadLetterHandlerFunc func(ctx context.Context, msg Message, err error)
 
-func (d DeadLetterHandlerFunc) Handle(msg Message, err error) {
-	d(msg, err)
+func (d DeadLetterHandlerFunc) Handle(ctx context.Context, msg Message, err error) {
+	d(ctx, msg, err)
 }

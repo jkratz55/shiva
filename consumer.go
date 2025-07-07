@@ -55,6 +55,11 @@ type Consumer struct {
 	onRevoked          func(tps TopicPartitions)
 	onStats            func(stats map[string]any)
 	onOffsetsCommitted func(offsets TopicPartitions, err error)
+	name               string
+	telemetryProvider  ConsumerTelemetryProvider
+
+	rebalanceCh      chan struct{}
+	lagMonitorStopCh chan struct{}
 }
 
 // NewConsumer creates and initializes a Consumer instance.
@@ -119,6 +124,12 @@ func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...Consum
 		return nil, fmt.Errorf("kafka: failed to initialize Confluent Kafka Consumer: %w", err)
 	}
 
+	// If name isn't set use the topic and type of the handler to generate a default name.
+	name := options.name
+	if strings.TrimSpace(name) == "" {
+		name = fmt.Sprintf("%s|%T", topic, handler)
+	}
+
 	consumer := &Consumer{
 		baseConsumer:       base,
 		handler:            handler,
@@ -135,6 +146,10 @@ func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...Consum
 		onRevoked:          options.onRevoked,
 		onStats:            options.onStats,
 		onOffsetsCommitted: options.onOffsetsCommitted,
+		name:               name,
+		telemetryProvider:  options.consumerTelemetryProvider,
+		rebalanceCh:        make(chan struct{}, 1),
+		lagMonitorStopCh:   make(chan struct{}, 1),
 	}
 
 	err = consumer.baseConsumer.Subscribe(consumer.topic, consumer.onRebalance)
@@ -168,6 +183,7 @@ func (c *Consumer) Run() error {
 	}
 
 	c.running = true
+	go c.monitorLag()
 
 	// Event loop that continuously polls the brokers for new events and handles
 	// them accordingly. The loop will continue to run until the Consumer is closed
@@ -190,6 +206,7 @@ func (c *Consumer) Run() error {
 				_, _ = c.baseConsumer.Commit()
 				_ = c.baseConsumer.Close()
 				c.stopChan <- struct{}{}
+				c.lagMonitorStopCh <- struct{}{}
 				return err
 			}
 
@@ -221,12 +238,15 @@ func (c *Consumer) Run() error {
 
 	// Signal to the goroutine processing logs to stop
 	c.stopChan <- struct{}{}
+	c.lagMonitorStopCh <- struct{}{}
 	return closeErr
 }
 
 // handleError invokes the onErr callback and returns an error if the error is
 // considered fatal, otherwise returns nil.
 func (c *Consumer) handleError(err kafka.Error) error {
+
+	c.telemetryProvider.RecordKafkaError(c.name, c.topic, int(err.Code()))
 
 	// Invoke onErr callback
 	c.onErr(fmt.Errorf("kafka: %w", err))
@@ -242,6 +262,10 @@ func (c *Consumer) handleError(err kafka.Error) error {
 // the message by storing the offset locally based on the AcknowledgmentStrategy,
 // and hands the Message off to the Handler.
 func (c *Consumer) handleMessage(msg *kafka.Message) {
+	defer func() {
+		c.telemetryProvider.RecordMessageProcessed(c.name, c.topic)
+	}()
+
 	// Note: If the AcknowledgmentStrategy is set to none the message is never acknowledged on
 	// purpose.
 
@@ -255,15 +279,27 @@ func (c *Consumer) handleMessage(msg *kafka.Message) {
 		}
 	}
 
+	startTs := time.Now()
 	shivaMsg := mapMessage(msg)
-	err := c.handler.Handle(shivaMsg)
+	ctx, onDone := c.telemetryProvider.Trace(shivaMsg)
+
+	err := c.handler.Handle(ctx, shivaMsg)
+
+	handlerDur := time.Since(startTs)
+	c.telemetryProvider.RecordHandlerExecutionDuration(c.name, c.topic, handlerDur)
+
 	if err != nil {
+		c.telemetryProvider.RecordHandlerError(c.name, c.topic)
+
 		// If the Handler returns an error signaling, the message was not successfully
 		// processed. The DeadLetterHandler is invoked to provide a last opportunity
 		// to do something with the message before the Consumer moves on to the next
 		// Message.
-		c.dlHandler.Handle(shivaMsg, err)
+		c.dlHandler.Handle(ctx, shivaMsg, err)
 	}
+
+	// End trace and record handler error, if there was one
+	onDone(err)
 
 	// If the AcknowledgmentStrategy is post-processing the message is acknowledged after the Handler
 	// is invoked, regardless if it returns an error value. This follows the at-least-once delivery
@@ -401,7 +437,7 @@ func (c *Consumer) Lag() (map[string]int64, error) {
 	}
 
 	for _, tp := range positions {
-		_, high, err := c.baseConsumer.GetWatermarkOffsets(*tp.Topic, tp.Partition)
+		_, high, err := c.baseConsumer.QueryWatermarkOffsets(*tp.Topic, tp.Partition, 5000)
 		if err != nil {
 			return lag, fmt.Errorf("get watermark offsets: %w", err)
 		}
@@ -504,19 +540,26 @@ func (c *Consumer) QueryWatermarkOffsets(ctx context.Context) (map[string]Waterm
 	}
 }
 
+// IsRunning indicates if the Consumer is running.
 func (c *Consumer) IsRunning() bool {
 	return c.running
 }
 
+// IsClosed indicates if the Consumer is closed.
 func (c *Consumer) IsClosed() bool {
 	return c.baseConsumer.IsClosed()
 }
 
+// Close stops the Consumer and releases the underlying resources.
+//
+// After Close the Consumer is not usable.
 func (c *Consumer) Close() {
 	c.running = false
 }
 
 func (c *Consumer) onRebalance(_ *kafka.Consumer, event kafka.Event) error {
+	c.telemetryProvider.RecordRebalance(c.name, c.config.GroupID)
+
 	switch e := event.(type) {
 	case kafka.AssignedPartitions:
 		c.onAssigned(mapTopicPartitions(e.Partitions))
@@ -524,7 +567,58 @@ func (c *Consumer) onRebalance(_ *kafka.Consumer, event kafka.Event) error {
 		c.onRevoked(mapTopicPartitions(e.Partitions))
 	}
 
+	// Notify goroutine monitoring lag to reset its gauges to 0
+	c.rebalanceCh <- struct{}{}
+
 	return nil
+}
+
+// monitorLag updates metrics with the current lag every 10 seconds.
+func (c *Consumer) monitorLag() {
+	ticker := time.NewTicker(time.Second * 10)
+	defer ticker.Stop()
+
+	knownTopicPartitions := make(map[string]struct{})
+
+	for {
+		select {
+		case <-ticker.C:
+			// If the Consumer is no longer running return
+			if !c.running {
+				return
+			}
+
+			lags, err := c.Lag()
+			if err != nil {
+				c.logger.Warn("Failed for update lag metrics",
+					"err", err)
+			}
+
+			for tp, lag := range lags {
+				knownTopicPartitions[tp] = struct{}{}
+				parts := strings.Split(tp, "|")
+				c.telemetryProvider.RecordLag(c.name, c.config.GroupID, parts[0], parts[1], lag)
+			}
+
+		case <-c.rebalanceCh:
+			// If a rebalance occurs, we may have end up with different partitions or maybe even
+			// no partitions. This means the metrics (gauges) we've been updating with the lag
+			// could remain fixed and create misleading metrics. When we detect a rebalance, we
+			// reset the lag to the partitions we've been updating to 0
+			for tp, _ := range knownTopicPartitions {
+				parts := strings.Split(tp, "|")
+				topic := parts[0]
+				partition := parts[1]
+
+				c.telemetryProvider.RecordLag(c.name, c.config.GroupID, topic, partition, 0)
+			}
+			knownTopicPartitions = make(map[string]struct{})
+
+		case <-c.lagMonitorStopCh:
+			// Consumer is done, stop monitoring lag
+			return
+		}
+	}
 }
 
 // consumerConfigMap maps the configuration to the ConfigMap the Confluent Kafka

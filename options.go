@@ -1,6 +1,7 @@
 package shiva
 
 import (
+	"context"
 	"time"
 )
 
@@ -9,22 +10,36 @@ type options struct {
 	// common options
 	logger Logger
 	onErr  func(err error)
+	name   string
 
 	// consumer options
-	deadLetterHandler  DeadLetterHandler
-	onAssigned         func(tps TopicPartitions)
-	onRevoked          func(tps TopicPartitions)
-	onStats            func(data map[string]any)
-	statsEnabled       bool
-	statsInterval      int
-	onOffsetsCommitted func(offsets TopicPartitions, err error)
+	deadLetterHandler         DeadLetterHandler
+	onAssigned                func(tps TopicPartitions)
+	onRevoked                 func(tps TopicPartitions)
+	onStats                   func(data map[string]any)
+	statsEnabled              bool
+	statsInterval             int
+	onOffsetsCommitted        func(offsets TopicPartitions, err error)
+	consumerTelemetryProvider ConsumerTelemetryProvider
+
+	// producer options
+	producerTelemetryProvider ProducerTelemetryProvider
 }
 
 func newOptions(opts ...baseOption) *options {
 	o := &options{
-		logger:            NewNopLogger(),
-		onErr:             func(err error) {},
-		deadLetterHandler: DeadLetterHandlerFunc(func(msg Message, err error) {}),
+		logger:                    NewNopLogger(),
+		onErr:                     func(err error) {},
+		deadLetterHandler:         DeadLetterHandlerFunc(func(ctx context.Context, msg Message, err error) {}),
+		onAssigned:                func(tps TopicPartitions) {},
+		onRevoked:                 func(tps TopicPartitions) {},
+		onStats:                   func(data map[string]any) {},
+		statsEnabled:              false,
+		statsInterval:             0,
+		onOffsetsCommitted:        func(offsets TopicPartitions, err error) {},
+		consumerTelemetryProvider: &NopConsumerTelemetryProvider{},
+		name:                      "",
+		producerTelemetryProvider: &NopProducerTelemetryProvider{},
 	}
 
 	for _, opt := range opts {
@@ -86,11 +101,18 @@ func WithOnErr(fn func(err error)) Option {
 	})
 }
 
+// WithName sets a name or identifier for a producer or consumer.
+func WithName(name string) Option {
+	return option(func(opt *options) {
+		opt.name = name
+	})
+}
+
 // WithDeadLetterHandler sets a DeadLetterHandler that is invoked by the Consumer
 // when the Handler returns an error signaling it failed to process the message.
 func WithDeadLetterHandler(dlh DeadLetterHandler) ConsumerOption {
 	if dlh == nil {
-		dlh = DeadLetterHandlerFunc(func(msg Message, err error) {})
+		dlh = DeadLetterHandlerFunc(func(ctx context.Context, msg Message, err error) {})
 	}
 	return consumerOption(func(opt *options) {
 		opt.deadLetterHandler = dlh
@@ -141,5 +163,42 @@ func WithOnOffsetsCommitted(fn func(offsets TopicPartitions, err error)) Consume
 	}
 	return consumerOption(func(opt *options) {
 		opt.onOffsetsCommitted = fn
+	})
+}
+
+// WithConsumerTelemetryProvider sets an implementation of ConsumerTelemetryProvider
+// the Consumer will use to record metrics/telemetry.
+func WithConsumerTelemetryProvider(provider ConsumerTelemetryProvider) ConsumerOption {
+	if provider == nil {
+		provider = &NopConsumerTelemetryProvider{}
+	}
+	return consumerOption(func(opt *options) {
+		opt.consumerTelemetryProvider = provider
+	})
+}
+
+type ProducerOption interface {
+	baseOption
+	producer()
+}
+
+type producerOption func(opt *options)
+
+var _ ProducerOption = (*producerOption)(nil)
+
+func (c producerOption) apply(opts *options) {
+	c(opts)
+}
+
+func (c producerOption) producer() {}
+
+// WithProducerTelemetryProvider sets an implementation of ProducerTelemetryProvider
+// the Producer will use to record metrics/telemetry.
+func WithProducerTelemetryProvider(provider ProducerTelemetryProvider) ProducerOption {
+	if provider == nil {
+		provider = &NopProducerTelemetryProvider{}
+	}
+	return producerOption(func(opt *options) {
+		opt.producerTelemetryProvider = provider
 	})
 }

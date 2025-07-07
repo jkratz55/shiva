@@ -1,6 +1,7 @@
 package shiva
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -93,7 +94,7 @@ func WithOnError(onError func(err error)) RetryOption {
 // which is a callback invoked whenever an error is returned from the Handler.
 //
 // A panic will occur if next is nil.
-func Retry(next Handler, opts ...RetryOption) Middleware {
+func Retry(next Handler, opts ...RetryOption) *RetryHandler { // todo: since this is taking a handler, it should return a handler
 	if next == nil {
 		panic("cannot wrap nil Handler, next cannot be nil")
 	}
@@ -103,20 +104,18 @@ func Retry(next Handler, opts ...RetryOption) Middleware {
 		opt(conf)
 	}
 
-	return func(next Handler) Handler {
-		return &RetryHandler{
-			next: next,
-			conf: conf,
-			backoffPool: sync.Pool{
-				New: func() interface{} {
-					bo := backoff.NewExponentialBackOff()
-					bo.InitialInterval = conf.initialDelay
-					bo.MaxInterval = conf.maxDelay
-					bo.Multiplier = 2
-					return bo
-				},
+	return &RetryHandler{
+		next: next,
+		conf: conf,
+		backoffPool: sync.Pool{
+			New: func() interface{} {
+				bo := backoff.NewExponentialBackOff()
+				bo.InitialInterval = conf.initialDelay
+				bo.MaxInterval = conf.maxDelay
+				bo.Multiplier = 2
+				return bo
 			},
-		}
+		},
 	}
 }
 
@@ -128,7 +127,7 @@ type RetryHandler struct {
 	backoffPool sync.Pool
 }
 
-func (r *RetryHandler) Handle(msg Message) error {
+func (r *RetryHandler) Handle(ctx context.Context, msg Message) error {
 	var err error
 
 	bo := r.backoffPool.Get().(*backoff.ExponentialBackOff)
@@ -136,7 +135,7 @@ func (r *RetryHandler) Handle(msg Message) error {
 	defer r.backoffPool.Put(bo)
 
 	for i := 0; i < r.conf.maxAttempts; i++ {
-		handlerErr := r.next.Handle(msg)
+		handlerErr := r.next.Handle(ctx, msg)
 		if handlerErr == nil {
 			// If the next Handler returns a nil error value it is assumed the operation succeeded
 			return nil
