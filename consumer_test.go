@@ -3,10 +3,12 @@ package shiva
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/testcontainers/testcontainers-go"
 	kafkatest "github.com/testcontainers/testcontainers-go/modules/kafka"
 
@@ -249,28 +251,265 @@ func TestConsumer_Lag(t *testing.T) {
 
 }
 
-func TestConsumer_GetMetadata(t *testing.T) {
+func TestConsumer_GetWaterMarkOffset(t *testing.T) {
 
+	config := KafkaConfig{
+		BootstrapServers: []string{"localhost:9092"},
+		GroupID:          "test-group",
+	}
+
+	type testCase struct {
+		name        string
+		init        func() *Consumer
+		expected    map[string]Watermark
+		expectedErr bool
+	}
+
+	tests := []testCase{
+		{
+			name: "Success",
+			init: func() *Consumer {
+				base := new(mockKafkaConsumer)
+				base.On("Assignment").Return([]kafka.TopicPartition{
+					{
+						Topic:     StringPtr("test"),
+						Partition: 0,
+						Offset:    0,
+					},
+					{
+						Topic:     StringPtr("test"),
+						Partition: 1,
+						Offset:    0,
+					},
+				}, nil)
+				base.On("GetWatermarkOffsets", mock.Anything, mock.Anything).Return(int64(1111), int64(2222), nil).Once()
+				base.On("GetWatermarkOffsets", mock.Anything, mock.Anything).Return(int64(3333), int64(4444), nil).Once()
+
+				consumer, err := NewConsumer(config, "test", new(mockHandler))
+				assert.NoError(t, err)
+				consumer.baseConsumer = base
+				return consumer
+			},
+			expected: map[string]Watermark{
+				"test|0": {
+					Low:  1111,
+					High: 2222,
+				},
+				"test|1": {
+					Low:  3333,
+					High: 4444,
+				},
+			},
+			expectedErr: false,
+		},
+		{
+			name: "Error Getting Assignments",
+			init: func() *Consumer {
+				base := new(mockKafkaConsumer)
+				base.On("Assignment").Return([]kafka.TopicPartition{}, assert.AnError)
+				consumer, err := NewConsumer(config, "test", new(mockHandler))
+				assert.NoError(t, err)
+				consumer.baseConsumer = base
+				return consumer
+			},
+			expected:    nil,
+			expectedErr: true,
+		},
+		{
+			name: "Error Getting Watermark Offsets",
+			init: func() *Consumer {
+				base := new(mockKafkaConsumer)
+				base.On("Assignment").Return([]kafka.TopicPartition{
+					{
+						Topic:     StringPtr("test"),
+						Partition: 0,
+						Offset:    0,
+					},
+				}, nil)
+				base.On("GetWatermarkOffsets", mock.Anything, mock.Anything).Return(int64(0), int64(0), assert.AnError).Once()
+
+				consumer, err := NewConsumer(config, "test", new(mockHandler))
+				assert.NoError(t, err)
+				consumer.baseConsumer = base
+				return consumer
+			},
+			expected:    nil,
+			expectedErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			consumer := test.init()
+			watermarks, err := consumer.GetWatermarkOffsets()
+			assert.Equal(t, test.expected, watermarks)
+			assert.Equal(t, test.expectedErr, err != nil)
+		})
+	}
 }
 
 func TestConsumer_QueryWatermarkOffsets(t *testing.T) {
+	config := KafkaConfig{
+		BootstrapServers: []string{"localhost:9092"},
+		GroupID:          "test-group",
+	}
 
+	type testCase struct {
+		name        string
+		init        func() *Consumer
+		expected    map[string]Watermark
+		expectedErr bool
+	}
+
+	tests := []testCase{
+		{
+			name: "Success",
+			init: func() *Consumer {
+				base := new(mockKafkaConsumer)
+				base.On("Assignment").Return([]kafka.TopicPartition{
+					{
+						Topic:     StringPtr("test"),
+						Partition: 0,
+						Offset:    0,
+					},
+					{
+						Topic:     StringPtr("test"),
+						Partition: 1,
+						Offset:    0,
+					},
+				}, nil)
+				base.On("QueryWatermarkOffsets", mock.Anything, mock.Anything, mock.Anything).Return(int64(1111), int64(2222), nil).Once()
+				base.On("QueryWatermarkOffsets", mock.Anything, mock.Anything, mock.Anything).Return(int64(3333), int64(4444), nil).Once()
+
+				consumer, err := NewConsumer(config, "test", new(mockHandler))
+				assert.NoError(t, err)
+				consumer.baseConsumer = base
+				return consumer
+			},
+			expected: map[string]Watermark{
+				"test|0": {
+					Low:  1111,
+					High: 2222,
+				},
+				"test|1": {
+					Low:  3333,
+					High: 4444,
+				},
+			},
+			expectedErr: false,
+		},
+		{
+			name: "Error Getting Assignments",
+			init: func() *Consumer {
+				base := new(mockKafkaConsumer)
+				base.On("Assignment").Return([]kafka.TopicPartition{}, assert.AnError)
+				consumer, err := NewConsumer(config, "test", new(mockHandler))
+				assert.NoError(t, err)
+				consumer.baseConsumer = base
+				return consumer
+			},
+			expected:    nil,
+			expectedErr: true,
+		},
+		{
+			name: "Error Querying Watermark Offsets",
+			init: func() *Consumer {
+				base := new(mockKafkaConsumer)
+				base.On("Assignment").Return([]kafka.TopicPartition{
+					{
+						Topic:     StringPtr("test"),
+						Partition: 0,
+						Offset:    0,
+					},
+				}, nil)
+				base.On("QueryWatermarkOffsets", mock.Anything, mock.Anything, mock.Anything).Return(int64(0), int64(0), assert.AnError).Once()
+
+				consumer, err := NewConsumer(config, "test", new(mockHandler))
+				assert.NoError(t, err)
+				consumer.baseConsumer = base
+				return consumer
+			},
+			expected:    nil,
+			expectedErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			consumer := test.init()
+			watermarks, err := consumer.QueryWatermarkOffsets(context.Background())
+			assert.Equal(t, test.expected, watermarks)
+			assert.Equal(t, test.expectedErr, err != nil)
+		})
+	}
 }
 
 func TestConsumer_IsRunning(t *testing.T) {
-
+	consumer := new(Consumer)
+	assert.False(t, consumer.IsRunning())
+	consumer.running = true
+	assert.True(t, consumer.IsRunning())
 }
 
 func TestConsumer_IsClosed(t *testing.T) {
+	config := KafkaConfig{
+		BootstrapServers: []string{"localhost:9092"},
+		GroupID:          "test-group",
+	}
 
+	base := new(mockKafkaConsumer)
+	base.On("IsClosed").Return(false).Once()
+	base.On("IsClosed").Return(true).Once()
+
+	consumer, err := NewConsumer(config, "test", new(mockHandler))
+	assert.NoError(t, err)
+	consumer.baseConsumer = base
+
+	assert.False(t, consumer.IsClosed())
+	consumer.Close()
+	assert.True(t, consumer.IsClosed())
 }
 
 func TestConsumer_Close(t *testing.T) {
+	config := KafkaConfig{
+		BootstrapServers: []string{"localhost:9092"},
+		GroupID:          "test-group",
+	}
 
-}
+	base := new(mockKafkaConsumer)
+	base.On("Poll", mock.Anything).Return(&kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     StringPtr("test"),
+			Partition: 0,
+			Offset:    100,
+		},
+		Value: []byte("Hello World!"),
+		Key:   []byte("hello"),
+	})
+	base.On("IsClosed").Return(false)
+	base.On("StoreMessage", mock.Anything).Return([]kafka.TopicPartition{}, nil)
+	base.On("Commit").Return([]kafka.TopicPartition{}, nil)
+	base.On("Close").Return(nil)
 
-func TestConsumer_Run(t *testing.T) {
+	consumer, err := NewConsumer(config, "test", HandlerFunc(func(ctx context.Context, msg Message) error {
+		return nil
+	}))
+	assert.NoError(t, err)
+	consumer.baseConsumer = base
 
+	assert.False(t, consumer.running)
+
+	go func() {
+		err := consumer.Run()
+		assert.NoError(t, err)
+	}()
+
+	time.Sleep(2 * time.Second)
+	assert.True(t, consumer.running)
+	consumer.Close()
+	time.Sleep(2 * time.Second)
+
+	assert.False(t, consumer.running)
 }
 
 func TestConsumer(t *testing.T) {
