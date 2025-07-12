@@ -249,6 +249,71 @@ func TestConsumer_Resume(t *testing.T) {
 
 func TestConsumer_Lag(t *testing.T) {
 
+	config := KafkaConfig{
+		BootstrapServers: []string{"localhost:9092"},
+		GroupID:          "test-group",
+	}
+
+	type testCase struct {
+		name        string
+		init        func() *Consumer
+		expected    map[string]int64
+		expectedErr bool
+	}
+
+	tests := []testCase{
+		{
+			name: "Success",
+			init: func() *Consumer {
+				base := new(mockKafkaConsumer)
+				base.On("Assignment").Return([]kafka.TopicPartition{
+					{
+						Topic:     StringPtr("test"),
+						Partition: 0,
+						Offset:    0,
+					},
+					{
+						Topic:     StringPtr("test"),
+						Partition: 1,
+						Offset:    0,
+					},
+				}, nil)
+				base.On("Position", mock.Anything).Return([]kafka.TopicPartition{
+					{
+						Topic:     StringPtr("test"),
+						Partition: 0,
+						Offset:    100,
+					},
+					{
+						Topic:     StringPtr("test"),
+						Partition: 1,
+						Offset:    200,
+					},
+				}, nil)
+				base.On("QueryWatermarkOffsets", mock.Anything, mock.Anything, mock.Anything).Return(int64(0), int64(300), nil).Once()
+				base.On("QueryWatermarkOffsets", mock.Anything, mock.Anything, mock.Anything).Return(int64(0), int64(500), nil).Once()
+
+				consumer, err := NewConsumer(config, "test", new(mockHandler))
+				assert.NoError(t, err)
+				consumer.baseConsumer = base
+				return consumer
+			},
+			expected: map[string]int64{
+				"test|0": 200,
+				"test|1": 300,
+			},
+			expectedErr: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			consumer := test.init()
+			lag, err := consumer.Lag()
+			assert.Equal(t, test.expected, lag)
+			assert.Equal(t, test.expectedErr, err != nil)
+		})
+	}
 }
 
 func TestConsumer_GetWaterMarkOffset(t *testing.T) {
@@ -510,6 +575,136 @@ func TestConsumer_Close(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	assert.False(t, consumer.running)
+}
+
+func TestConsumer_Run(t *testing.T) {
+
+	config := KafkaConfig{
+		BootstrapServers: []string{"localhost:9092"},
+		GroupID:          "test-group",
+	}
+
+	var (
+		errorCalled            int
+		offsetsCommittedCalled int
+	)
+
+	type testCase struct {
+		name                           string
+		init                           func(h Handler, dlh DeadLetterHandler) *Consumer
+		handlerFactory                 func() Handler
+		deadHandlerFactory             func() DeadLetterHandler
+		expectedHandlerCalled          int
+		expectedDeadLetterCalled       int
+		expectedErrorHandlerCalled     int
+		expectedOffsetsCommittedCalled int
+	}
+
+	msg := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     StringPtr("test"),
+			Partition: 0,
+			Offset:    1000,
+		},
+		Value:     []byte("Hello World"),
+		Key:       []byte("hello111"),
+		Timestamp: time.Now(),
+		Headers:   []kafka.Header{{Key: "key", Value: []byte("value")}},
+	}
+
+	tests := []testCase{
+		{
+			name: "Run With Messages and Not-Fatal Errors",
+			init: func(h Handler, dlh DeadLetterHandler) *Consumer {
+				base := new(mockKafkaConsumer)
+
+				// Setup Confluent Kafka Consumer to always succeed for the basic operations
+				// like subscribing, storing messages, committing offsets, and closing.
+				base.On("Subscribe", mock.Anything, mock.Anything).Return(nil)
+				base.On("IsClosed").Return(false).Once()
+				base.On("StoreMessage", mock.Anything).Return([]kafka.TopicPartition{}, nil)
+				base.On("Commit").Return([]kafka.TopicPartition{}, nil)
+				base.On("Close").Return(nil)
+
+				// Simulate receiving messages with an error in between
+				base.On("Poll", mock.Anything).Return(msg).Once()
+				base.On("Poll", mock.Anything).Return(msg).Once()
+				base.On("Poll", mock.Anything).Return(msg).Once()
+				base.On("Poll", mock.Anything).Return(kafka.NewError(kafka.ErrAllBrokersDown, "something", false)).Once()
+				base.On("Poll", mock.Anything).Return(msg).Once()
+				base.On("Poll", mock.Anything).Return(msg).Once()
+
+				// Simulate offsets committed event
+				base.On("Poll", mock.Anything).Return(kafka.OffsetsCommitted{
+					Error: nil,
+					Offsets: []kafka.TopicPartition{
+						{
+							Topic:     StringPtr("test"),
+							Partition: 0,
+							Offset:    1000,
+						},
+					},
+				}).Once()
+
+				// Do nothing
+				base.On("Poll", mock.Anything).Return(kafka.PartitionEOF{})
+
+				consumer, err := NewConsumer(config, "test", h,
+					WithDeadLetterHandler(dlh),
+					WithOnOffsetsCommitted(func(offsets TopicPartitions, err error) {
+						offsetsCommittedCalled++
+					}),
+					WithOnErr(func(err error) {
+						errorCalled++
+					}))
+				assert.NoError(t, err)
+				consumer.baseConsumer = base
+				return consumer
+			},
+			handlerFactory: func() Handler {
+				handler := new(mockHandler)
+				handler.On("Handle", mock.Anything, mock.Anything).Return(nil).Once()
+				handler.On("Handle", mock.Anything, mock.Anything).Return(nil).Once()
+				handler.On("Handle", mock.Anything, mock.Anything).Return(nil).Once()
+				handler.On("Handle", mock.Anything, mock.Anything).Return(nil).Once()
+				handler.On("Handle", mock.Anything, mock.Anything).Return(assert.AnError).Once()
+				return handler
+			},
+			deadHandlerFactory: func() DeadLetterHandler {
+				dlh := new(mockDeadLetterHandler)
+				dlh.On("Handle", mock.Anything, mock.Anything, mock.Anything).Return()
+				return dlh
+			},
+			expectedHandlerCalled:          5,
+			expectedDeadLetterCalled:       1,
+			expectedErrorHandlerCalled:     1,
+			expectedOffsetsCommittedCalled: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			errorCalled = 0
+			offsetsCommittedCalled = 0
+
+			handler := test.handlerFactory()
+			deadLetterHandler := test.deadHandlerFactory()
+			consumer := test.init(handler, deadLetterHandler)
+			go func() {
+				err := consumer.Run()
+				assert.NoError(t, err)
+			}()
+
+			// todo: need a better way to handle this, this is flakey as hell
+			time.Sleep(3 * time.Second)
+			consumer.Close()
+
+			assert.Equal(t, test.expectedHandlerCalled, len(handler.(*mockHandler).Calls))
+			assert.Equal(t, test.expectedDeadLetterCalled, deadLetterHandler.(*mockDeadLetterHandler).called)
+			assert.Equal(t, test.expectedErrorHandlerCalled, errorCalled)
+			assert.Equal(t, test.expectedOffsetsCommittedCalled, offsetsCommittedCalled)
+		})
+	}
 }
 
 func TestConsumer(t *testing.T) {
