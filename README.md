@@ -12,7 +12,7 @@
 [![Build Status](https://github.com/jkratz55/shiva/workflows/CI/badge.svg)](https://github.com/jkratz55/shiva/actions)
 [![Coverage Status](https://coveralls.io/repos/github/jkratz55/shiva/badge.svg?branch=master)](https://coveralls.io/github/jkratz55/shiva?branch=master)
 
-Shiva is a GO library/module for working with Kafka. Shiva provides friendly higher level APIs for consuming and
+Shiva is a GO library/module for working with Kafka. Shi va provides friendly higher level APIs for consuming and
 producing messages with Kafka. Under the hood Shiva uses the official Confluent Kafka GO
 client (https://github.com/confluentinc/confluent-kafka-go). Some GO developers are very much opposed to using CGO, and
 unfortunately, if you are dead set on avoiding CGO, this library may not be for you as it uses confluent-kafka-go, which

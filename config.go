@@ -83,7 +83,7 @@ type KafkaConfig struct {
 	// are fetched in batches by the consumer. The default is 52428800 (50MB).
 	//
 	// Applies To: Consumer
-	MaxFetchBytes int `env:"KAFKA_MAX_FETCH_BYTES, default=52428800"`
+	MaxFetchBytes int `env:"SHIVA_KAFKA_MAX_FETCH_BYTES, default=52428800"`
 
 	// The security protocol used to communicate with the brokers.
 	//

@@ -85,6 +85,10 @@ func NewConsumer(conf KafkaConfig, topic string, handler Handler, opts ...Consum
 	}
 	options := newOptions(baseOpts...)
 
+	if strings.TrimSpace(conf.GroupID) == "" {
+		return nil, fmt.Errorf("invalid consumer config: group id cannot be empty")
+	}
+
 	configMap := consumerConfigMap(conf)
 
 	stopChan := make(chan struct{})
